@@ -17,19 +17,30 @@
  *     "일일 알림 자동 발송 설치" 버튼 클릭
  **********************************************************************/
 
+/* 품번(부품 품번) 기반 재고관리 스키마.
+   재고 식별 단위 = 품번(item_code) + 리비전(rev). 예) 품번 RP-303-013, 리비전 D → 바코드 "RP-303-013 (D)"
+   품번 = 제품군코드(RP)-블록코드(303)-시리얼(013). 제품군은 앞자리에서 도출(RP=PARKIE 등).
+   재고(stock)·보관위치(location)는 이 앱(LOT-IMS)이 정본으로 소유하고,
+   품번 마스터(name·unit·safety_stock)는 AppSheet가 syncItem 웹훅으로 동기화한다. */
 var SHEET_HEADERS = {
   Users:        ['user_id', 'name', 'role', 'pw_hash', 'created_at'],
-  Items:        ['item_code', 'name', 'unit', 'safety_stock', 'shelf_life_days'],
-  Lots:         ['lot_no', 'item_code', 'mfg_date', 'qty', 'location', 'created_by', 'created_at'],
+  Items:        ['item_code', 'rev', 'name', 'unit', 'safety_stock', 'stock', 'location'],
   Locations:    ['location_code', 'warehouse', 'zone', 'rack'],
-  History:      ['tx_id', 'ts', 'type', 'lot_no', 'item_code', 'qty', 'before', 'after', 'location', 'reason', 'user'],
+  History:      ['tx_id', 'ts', 'type', 'item_code', 'rev', 'qty', 'before', 'after', 'location', 'reason', 'user'],
   Settings:     ['key', 'value'],
-  Documents:    ['doc_id', 'lot_no', 'item_code', 'category', 'file_id', 'file_name', 'uploaded_by', 'uploaded_at'],
-  Issues:       ['issue_id', 'lot_no', 'item_code', 'severity', 'title', 'description', 'photo_file_id', 'status', 'reported_by', 'reported_at', 'updated_by', 'updated_at', 'resolution_note'],
+  Documents:    ['doc_id', 'item_code', 'rev', 'category', 'file_id', 'file_name', 'uploaded_by', 'uploaded_at'],
+  Issues:       ['issue_id', 'item_code', 'rev', 'severity', 'title', 'description', 'photo_file_id', 'status', 'reported_by', 'reported_at', 'updated_by', 'updated_at', 'resolution_note'],
   DevLog:       ['log_id', 'ts', 'author', 'category', 'title', 'content', 'done', 'updated_at']
 };
 var DRIVE_FOLDER_NAME = 'LOT-IMS-Files';
-var DEFAULT_SETTINGS = { chatWebhookUrl: '', alertEmails: '', expiryWarnDays: '30', alertHour: '8', driveFolderId: '' };
+var DEFAULT_SETTINGS = { chatWebhookUrl: '', alertEmails: '', alertHour: '8', driveFolderId: '', syncToken: '' };
+/* 제품군 코드표 (품번 앞자리) — 프론트엔드 GROUP_NAMES 와 동일하게 유지 */
+var GROUP_NAMES = { RP: 'PARKIE', RD: 'DD-DRIVING', RG: 'GOALIE', RZ: 'COMMON PARTS', RQ: 'QD-DRIVING', RS: 'STANLEY' };
+function groupCodeOf_(code) { return String(code || '').split('-')[0].toUpperCase(); }
+function findItem_(items, code, rev) {
+  var c = String(code || '').toUpperCase(), r = String(rev || '').toUpperCase();
+  return items.filter(function (x) { return String(x.item_code).toUpperCase() === c && String(x.rev || '').toUpperCase() === r; })[0];
+}
 
 /* ============ 최초 1회 실행: 시트/관리자/드라이브 폴더 생성 ============ */
 function setup() {
@@ -48,10 +59,10 @@ function setup() {
   if (!readTable_('Users').rows.length) {
     appendRow_('Users', { user_id: 'admin', name: '관리자', role: 'admin', pw_hash: sha256_('admin1234'), created_at: Date.now() });
   }
-  // 샘플 마스터 데이터
+  // 샘플 마스터 데이터 (품번+리비전 기준 · 재고는 0에서 시작)
   if (!readTable_('Items').rows.length) {
-    appendRow_('Items', { item_code: 'BRKT01', name: '브래킷 A형', unit: 'EA', safety_stock: 100, shelf_life_days: 0 });
-    appendRow_('Items', { item_code: 'GRSE01', name: '윤활 그리스', unit: '통', safety_stock: 20, shelf_life_days: 365 });
+    appendRow_('Items', { item_code: 'RP-303-013', rev: 'D', name: 'COVER, E-RR', unit: 'EA', safety_stock: 100, stock: 0, location: '' });
+    appendRow_('Items', { item_code: 'RG-101-002', rev: 'A', name: 'BRACKET, MAIN', unit: 'EA', safety_stock: 50, stock: 0, location: '' });
   }
   if (!readTable_('Locations').rows.length) {
     appendRow_('Locations', { location_code: 'A-01-01', warehouse: 'A창고', zone: '01구역', rack: '01랙' });
@@ -97,17 +108,20 @@ function handle_(req) {
     var u = auth_({ id: req.id, pwHash: req.pwHash });
     return { ok: true, user: { id: u.user_id, name: u.name, role: u.role }, snapshot: snapshot_() };
   }
+  // AppSheet(부품 품번 관리 시스템) → 품번 마스터 동기화 웹훅. 사용자 인증 대신 공유 토큰으로 인증.
+  if (action === 'syncItem') return withLock_(function () { return syncItem_(req); });
+
   var user = auth_(req.auth);
 
   switch (action) {
     case 'all':       return { ok: true, snapshot: snapshot_() };
     case 'tx':        return withLock_(function () { return tx_(user, req); });
-    case 'createLot': return withLock_(function () { return createLot_(user, req); });
+    case 'bulkTx':    return withLock_(function () { return bulkTx_(user, req); });
     case 'setMyPw':   return withLock_(function () { return setPw_(user.user_id, req.newPwHash); });
 
-    // ----- 문서/이미지 -----
+    // ----- 문서/이미지 (품번 단위) -----
     case 'uploadDoc': return withLock_(function () { return uploadDoc_(user, req); });
-    case 'listDocs':  return { ok: true, docs: listDocsForLot_(req.lotNo) };
+    case 'listDocs':  return { ok: true, docs: listDocsForItem_(req.code, req.rev) };
     case 'delDoc':    admin_(user); return withLock_(function () { return delDoc_(req); });
 
     // ----- 품질검사/이상신고 -----
@@ -123,6 +137,7 @@ function handle_(req) {
     case 'delUser':   admin_(user); return withLock_(function () { return delRow_('Users', 'user_id', req.id, req.id === 'admin' ? '기본 관리자는 삭제할 수 없습니다' : null); });
     case 'setUserPw': admin_(user); return withLock_(function () { return setPw_(req.id, req.newPwHash); });
     case 'addItem':   admin_(user); return withLock_(function () { return addItem_(req); });
+    case 'bulkAddItem': admin_(user); return withLock_(function () { return bulkAddItem_(req); });
     case 'delItem':   admin_(user); return withLock_(function () { return delItem_(req); });
     case 'addLoc':    admin_(user); return withLock_(function () { return addLoc_(req); });
     case 'delLoc':    admin_(user); return withLock_(function () { return delLoc_(req); });
@@ -213,7 +228,7 @@ function getSettingsObj_() {
   return o;
 }
 function setSettingsObj_(s) {
-  ['chatWebhookUrl', 'alertEmails', 'expiryWarnDays', 'alertHour'].forEach(function (k) {
+  ['chatWebhookUrl', 'alertEmails', 'alertHour', 'syncToken'].forEach(function (k) {
     if (s[k] !== undefined) settingsSet_(k, String(s[k]));
   });
   return { ok: true, settings: getSettingsObj_() };
@@ -223,119 +238,147 @@ function setSettingsObj_(s) {
 function snapshot_() {
   var users = readTable_('Users').rows.map(function (u) { return { id: u.user_id, name: u.name, role: u.role }; });
   var items = readTable_('Items').rows.map(function (i) {
-    return { code: String(i.item_code), name: i.name, unit: i.unit || 'EA', safetyStock: Number(i.safety_stock) || 0, shelfLifeDays: Number(i.shelf_life_days) || 0 };
-  });
-  var lots = readTable_('Lots').rows.map(function (l) {
-    return { lotNo: String(l.lot_no), itemCode: String(l.item_code), mfgDate: String(l.mfg_date), qty: Number(l.qty) || 0, location: String(l.location || ''), createdBy: l.created_by, createdAt: Number(l.created_at) || 0 };
+    return { code: String(i.item_code), rev: String(i.rev || ''), name: i.name, unit: i.unit || 'EA', safetyStock: Number(i.safety_stock) || 0, stock: Number(i.stock) || 0, location: String(i.location || '') };
   });
   var locs = readTable_('Locations').rows.map(function (l) {
     return { code: String(l.location_code), warehouse: String(l.warehouse || ''), zone: String(l.zone || ''), rack: String(l.rack || '') };
   });
   var histAll = readTable_('History').rows;
   var hist = histAll.slice(Math.max(0, histAll.length - 500)).map(function (h) {
-    return { id: h.tx_id, ts: Number(h.ts) || 0, type: h.type, lotNo: String(h.lot_no), itemCode: String(h.item_code), qty: Number(h.qty) || 0, before: Number(h.before) || 0, after: Number(h.after) || 0, location: String(h.location || ''), reason: String(h.reason || ''), user: h.user };
+    return { id: h.tx_id, ts: Number(h.ts) || 0, type: h.type, itemCode: String(h.item_code), rev: String(h.rev || ''), qty: Number(h.qty) || 0, before: Number(h.before) || 0, after: Number(h.after) || 0, location: String(h.location || ''), reason: String(h.reason || ''), user: h.user };
   });
   var openIssues = readTable_('Issues').rows.filter(function (r) { return r.status !== '완료'; }).length;
-  return { users: users, items: items, lots: lots, locs: locs, hist: hist, histTotal: histAll.length, openIssueCount: openIssues };
+  return { users: users, items: items, locs: locs, hist: hist, histTotal: histAll.length, openIssueCount: openIssues };
 }
 
-/* ============ 입·출고 / 이동 트랜잭션 ============ */
-function tx_(user, p) {
+/* ============ 입·출고 트랜잭션 (품번+리비전 기반) ============ */
+/* 단일 처리를 적용(검증·재고 증감·이력) — tx_ 와 bulkTx_ 가 공유.
+   itemsTable 을 공유해 같은 배치 안에서 in-memory 재고를 이어서 반영한다.
+   재고 식별 = 품번(item_code)+리비전(rev). Items 컬럼: item_code(1)·rev(2)·name(3)·unit(4)·safety_stock(5)·stock(6)·location(7) */
+function applyTx_(user, p, itemsTable) {
   var type = p.type, qty = Math.floor(Number(p.qty) || 0);
-  if (['IN', 'OUT', 'MOVE'].indexOf(type) < 0) throw new Error('잘못된 처리 유형');
-  if (type !== 'MOVE' && qty < 1) throw new Error('수량은 1 이상이어야 합니다');
-  if (type === 'MOVE' && !p.loc) throw new Error('이동할 위치를 선택하세요');
+  if (['IN', 'OUT'].indexOf(type) < 0) throw new Error('잘못된 처리 유형');
+  if (qty < 1) throw new Error('수량은 1 이상이어야 합니다');
 
-  var t = readTable_('Lots');
-  var lot = t.rows.filter(function (r) { return String(r.lot_no) === String(p.lotNo); })[0];
-  if (!lot) throw new Error('등록되지 않은 로트: ' + p.lotNo);
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  var item = findItem_(itemsTable.rows, code, rev);
+  if (!item) throw new Error('등록되지 않은 품번/리비전: ' + (p.code || '') + (rev ? ' (' + rev + ')' : ''));
 
-  var before = Number(lot.qty) || 0, after = before, loc = String(lot.location || '');
+  var before = Number(item.stock) || 0, after = before, loc = String(item.location || '');
   if (type === 'IN') { after = before + qty; if (p.loc) loc = p.loc; }
-  else if (type === 'OUT') {
-    if (before < qty) throw new Error('재고 부족: 현재고 ' + before);
-    after = before - qty;
-  } else { loc = p.loc; }
+  else { if (before < qty) throw new Error('재고 부족: 현재고 ' + before); after = before - qty; }
 
-  t.sheet.getRange(lot._row, 4).setValue(after);
-  t.sheet.getRange(lot._row, 5).setValue(loc);
+  itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
+  if (type === 'IN' && p.loc) itemsTable.sheet.getRange(item._row, 7).setValue(loc);  // location
+  item.stock = after; item.location = loc;                         // in-memory 갱신 → 배치 내 후속 행 반영
 
   appendRow_('History', {
-    tx_id: uid_(), ts: Date.now(), type: type, lot_no: lot.lot_no, item_code: lot.item_code,
+    tx_id: uid_(), ts: Date.now(), type: type, item_code: item.item_code, rev: item.rev || '',
     qty: qty, before: before, after: after, location: loc, reason: p.reason || '', user: user.name
   });
+  return { ok: true, type: type, qty: qty, before: before, after: after, code: item.item_code, rev: item.rev || '' };
+}
 
-  // 안전재고 미달로 "새로 진입"한 경우에만 실시간 Chat 알림 (중복 알림 방지)
-  if (type === 'OUT') {
-    var item = readTable_('Items').rows.filter(function (r) { return String(r.item_code) === String(lot.item_code); })[0];
-    var safety = item ? Number(item.safety_stock) || 0 : 0;
-    if (safety > 0) {
-      var totalAfter = readTable_('Lots').rows.filter(function (r) { return String(r.item_code) === String(lot.item_code); }).reduce(function (s, r) { return s + (Number(r.qty) || 0); }, 0);
-      var totalBefore = totalAfter + qty;
-      if (totalBefore >= safety && totalAfter < safety) {
-        notifyChat_('⚠️ 안전재고 미달: ' + (item.name || lot.item_code) + ' 현재고 ' + totalAfter + (item.unit || '') + ' (안전재고 ' + safety + (item.unit || '') + ')');
-      }
+/* 출고로 재고가 안전재고선을 "이번에 처음" 밑돈 경우에만 실시간 Chat 알림 (중복 방지) */
+function notifyLowStockIfCrossed_(item, outQty) {
+  var safety = item ? Number(item.safety_stock) || 0 : 0;
+  if (safety <= 0) return;
+  var totalAfter = Number(item.stock) || 0;      // 재고는 (품번+리비전) 행에 직접 저장돼 있음
+  var totalBefore = totalAfter + outQty;
+  if (totalBefore >= safety && totalAfter < safety) {
+    var sku = item.item_code + (item.rev ? ' (' + item.rev + ')' : '');
+    notifyChat_('⚠️ 안전재고 미달: ' + (item.name || sku) + ' [' + sku + '] 현재고 ' + totalAfter + (item.unit || '') + ' (안전재고 ' + safety + (item.unit || '') + ')');
+  }
+}
+
+function tx_(user, p) {
+  var itemsTable = readTable_('Items');
+  var r = applyTx_(user, p, itemsTable);
+  if (r.type === 'OUT') notifyLowStockIfCrossed_(findItem_(itemsTable.rows, r.code, r.rev), r.qty);
+  rebuildReports_();
+  return { ok: true, after: r.after, snapshot: snapshot_() };
+}
+
+/* 여러 입·출고를 한 번에 처리 — 행별 성공/실패를 모아 반환(부분 성공 허용) */
+function bulkTx_(user, p) {
+  var rows = p.rows || [];
+  if (!rows.length) throw new Error('처리할 항목이 없습니다');
+  if (rows.length > 200) throw new Error('한 번에 최대 200건까지 처리할 수 있습니다');
+
+  var itemsTable = readTable_('Items');
+  var results = [], outKeys = {};
+  rows.forEach(function (row, i) {
+    try {
+      var r = applyTx_(user, row, itemsTable);
+      results.push({ idx: i, code: row.code, rev: row.rev, ok: true, type: r.type, qty: r.qty, after: r.after });
+      if (r.type === 'OUT') { var k = r.code + '|' + (r.rev || ''); outKeys[k] = (outKeys[k] || 0) + r.qty; }
+    } catch (err) {
+      results.push({ idx: i, code: row.code, rev: row.rev, ok: false, error: String(err && err.message ? err.message : err) });
     }
-  }
-  rebuildReports_();
-  return { ok: true, after: after, snapshot: snapshot_() };
-}
-
-/* ============ 로트 생성 (일련번호 서버 채번) ============ */
-function createLot_(user, p) {
-  var items = readTable_('Items').rows;
-  if (!items.some(function (i) { return String(i.item_code) === String(p.itemCode); })) throw new Error('등록되지 않은 품목');
-  var mfg = String(p.mfg || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(mfg)) throw new Error('제조일자 형식 오류');
-  var qty = Math.max(0, Math.floor(Number(p.qty) || 0));
-
-  var prefix = p.itemCode + '-' + mfg.replace(/-/g, '') + '-';
-  var lots = readTable_('Lots').rows;
-  var maxSerial = 0;
-  lots.forEach(function (l) {
-    var no = String(l.lot_no);
-    if (no.indexOf(prefix) === 0) maxSerial = Math.max(maxSerial, Number(no.slice(prefix.length)) || 0);
   });
-  var lotNo = prefix + ('00' + (maxSerial + 1)).slice(-3);
 
-  appendRow_('Lots', { lot_no: lotNo, item_code: p.itemCode, mfg_date: mfg, qty: qty, location: p.loc || '', created_by: user.user_id, created_at: Date.now() });
-  appendRow_('History', { tx_id: uid_(), ts: Date.now(), type: 'CREATE', lot_no: lotNo, item_code: p.itemCode, qty: 0, before: 0, after: 0, location: p.loc || '', reason: '바코드 발행', user: user.name });
-  if (qty > 0) {
-    appendRow_('History', { tx_id: uid_(), ts: Date.now(), type: 'IN', lot_no: lotNo, item_code: p.itemCode, qty: qty, before: 0, after: qty, location: p.loc || '', reason: '생성 시 초기 입고', user: user.name });
-  }
+  // 안전재고 미달 크로싱 알림 (배치 종료 후 품번+리비전별 1회, in-memory 재고 재사용)
+  Object.keys(outKeys).forEach(function (k) {
+    var parts = k.split('|'), item = findItem_(itemsTable.rows, parts[0], parts[1]);
+    if (item) notifyLowStockIfCrossed_(item, outKeys[k]);
+  });
   rebuildReports_();
-  return { ok: true, lotNo: lotNo, snapshot: snapshot_() };
+  return { ok: true, results: results, snapshot: snapshot_() };
 }
 
-/* ============ 문서 / 이미지 보관 (Google Drive) ============ */
+/* ============ 품번 마스터 동기화 (AppSheet 웹훅 수신) ============ */
+/* AppSheet(부품 품번 관리 시스템)가 품번+리비전을 밀어넣는 단방향 동기화.
+   마스터 컬럼(name·unit·safety_stock)만 업서트하고 stock·location(LOT-IMS 정본)은 건드리지 않는다. */
+function syncItem_(p) {
+  var token = String(settingsGet_('syncToken', ''));
+  if (!token) throw new Error('syncToken 미설정 — 관리 > 알림/연동에서 토큰을 먼저 설정하세요');
+  if (String(p.token || '') !== token) throw new Error('동기화 토큰이 올바르지 않습니다');
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  if (!code) throw new Error('품번(code)이 필요합니다');
+  var t = readTable_('Items');
+  var row = findItem_(t.rows, code, rev);
+  if (row) {   // upsert: 있으면 마스터 컬럼만 갱신 (name(3)·unit(4)·safety_stock(5))
+    if (p.name !== undefined) t.sheet.getRange(row._row, 3).setValue(p.name);
+    if (p.unit !== undefined) t.sheet.getRange(row._row, 4).setValue(p.unit || 'EA');
+    if (p.safetyStock !== undefined) t.sheet.getRange(row._row, 5).setValue(Number(p.safetyStock) || 0);
+  } else {     // 없으면 신규 (stock 0, location 공란)
+    appendRow_('Items', { item_code: code, rev: rev, name: p.name || '', unit: p.unit || 'EA', safety_stock: Number(p.safetyStock) || 0, stock: 0, location: '' });
+  }
+  rebuildReports_();
+  return { ok: true, code: code, rev: rev };
+}
+
+/* ============ 문서 / 이미지 보관 (Google Drive · 품번 단위) ============ */
 function uploadDoc_(user, p) {
-  if (!p.lotNo) throw new Error('로트번호가 필요합니다');
-  var lot = readTable_('Lots').rows.filter(function (r) { return String(r.lot_no) === String(p.lotNo); })[0];
-  if (!lot) throw new Error('등록되지 않은 로트: ' + p.lotNo);
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  if (!code) throw new Error('품번이 필요합니다');
+  var item = findItem_(readTable_('Items').rows, code, rev);
+  if (!item) throw new Error('등록되지 않은 품번/리비전: ' + (p.code || ''));
   if (!p.base64 || !p.fileName) throw new Error('첨부 파일이 없습니다');
 
   var folder = DriveApp.getFolderById(settingsGet_('driveFolderId') || ensureDriveFolder_());
   var blob = Utilities.newBlob(Utilities.base64Decode(p.base64), p.mimeType || 'application/octet-stream', p.fileName);
   var file = folder.createFile(blob);
-  file.setName(p.lotNo + '_' + (p.category || '기타') + '_' + Date.now() + '_' + p.fileName);
+  file.setName(code + (rev ? '-' + rev : '') + '_' + (p.category || '기타') + '_' + Date.now() + '_' + p.fileName);
   try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) { /* 도메인 정책상 실패할 수 있음 — 무시 */ }
 
   appendRow_('Documents', {
-    doc_id: uid_(), lot_no: p.lotNo, item_code: lot.item_code, category: p.category || '기타',
+    doc_id: uid_(), item_code: code, rev: rev, category: p.category || '기타',
     file_id: file.getId(), file_name: p.fileName, uploaded_by: user.name, uploaded_at: Date.now()
   });
-  return { ok: true, docs: listDocsForLot_(p.lotNo) };
+  return { ok: true, docs: listDocsForItem_(code, rev) };
 }
-function listDocsForLot_(lotNo) {
-  if (!lotNo) return [];
+function listDocsForItem_(code, rev) {
+  if (!code) return [];
+  var c = String(code).toUpperCase(), r = String(rev || '').toUpperCase();
   return readTable_('Documents').rows
-    .filter(function (r) { return String(r.lot_no) === String(lotNo); })
+    .filter(function (x) { return String(x.item_code).toUpperCase() === c && String(x.rev || '').toUpperCase() === r; })
     .sort(function (a, b) { return Number(b.uploaded_at) - Number(a.uploaded_at); })
     .map(docView_);
 }
 function docView_(r) {
   return {
-    id: r.doc_id, lotNo: r.lot_no, itemCode: r.item_code, category: r.category,
+    id: r.doc_id, itemCode: r.item_code, rev: r.rev || '', category: r.category,
     fileId: r.file_id, fileName: r.file_name, uploadedBy: r.uploaded_by, uploadedAt: Number(r.uploaded_at) || 0,
     thumbUrl: 'https://drive.google.com/thumbnail?id=' + r.file_id + '&sz=w400',
     viewUrl: 'https://drive.google.com/file/d/' + r.file_id + '/view'
@@ -347,50 +390,49 @@ function delDoc_(p) {
   if (!row) throw new Error('문서를 찾을 수 없습니다');
   try { DriveApp.getFileById(row.file_id).setTrashed(true); } catch (e) { /* 이미 삭제된 경우 무시 */ }
   t.sheet.deleteRow(row._row);
-  return { ok: true, docs: listDocsForLot_(row.lot_no) };
+  return { ok: true, docs: listDocsForItem_(row.item_code, row.rev) };
 }
 
-/* ============ 품질검사 / 이상신고 ============ */
+/* ============ 품질검사 / 이상신고 (품번 단위) ============ */
 function reportIssue_(user, p) {
   if (!p.title) throw new Error('제목을 입력하세요');
   var severity = ['경미', '중대', '긴급'].indexOf(p.severity) >= 0 ? p.severity : '경미';
-  var itemCode = p.itemCode || '';
-  var lot = null;
-  if (p.lotNo) {
-    lot = readTable_('Lots').rows.filter(function (r) { return String(r.lot_no) === String(p.lotNo); })[0];
-    if (!lot) throw new Error('등록되지 않은 로트: ' + p.lotNo);
-    itemCode = lot.item_code;
+  var itemCode = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  if (itemCode) {
+    var item = findItem_(readTable_('Items').rows, itemCode, rev);
+    if (!item) throw new Error('등록되지 않은 품번/리비전: ' + p.code);
   }
+  var sku = itemCode ? (itemCode + (rev ? ' (' + rev + ')' : '')) : '';
   var photoFileId = '';
   if (p.base64 && p.fileName) {
     var folder = DriveApp.getFolderById(settingsGet_('driveFolderId') || ensureDriveFolder_());
     var blob = Utilities.newBlob(Utilities.base64Decode(p.base64), p.mimeType || 'image/jpeg', p.fileName);
     var file = folder.createFile(blob);
-    file.setName('issue_' + (p.lotNo || 'general') + '_' + Date.now() + '_' + p.fileName);
+    file.setName('issue_' + (itemCode ? itemCode + (rev ? '-' + rev : '') : 'general') + '_' + Date.now() + '_' + p.fileName);
     try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e) {}
     photoFileId = file.getId();
   }
   var issueId = uid_();
   appendRow_('Issues', {
-    issue_id: issueId, lot_no: p.lotNo || '', item_code: itemCode, severity: severity,
+    issue_id: issueId, item_code: itemCode, rev: rev, severity: severity,
     title: p.title, description: p.description || '', photo_file_id: photoFileId,
     status: '접수', reported_by: user.name, reported_at: Date.now(), updated_by: '', updated_at: '', resolution_note: ''
   });
   if (severity === '중대' || severity === '긴급') {
-    var itemName = itemCode ? ((readTable_('Items').rows.filter(function (r) { return String(r.item_code) === String(itemCode); })[0] || {}).name || itemCode) : '';
-    notifyChat_('🚨 [' + severity + '] 품질 이상신고: ' + p.title + (p.lotNo ? ' — 로트 ' + p.lotNo + (itemName ? ' (' + itemName + ')' : '') : '') + ' · 신고자 ' + user.name);
+    var itemName = itemCode ? ((findItem_(readTable_('Items').rows, itemCode, rev) || {}).name || itemCode) : '';
+    notifyChat_('🚨 [' + severity + '] 품질 이상신고: ' + p.title + (sku ? ' — ' + sku + (itemName ? ' (' + itemName + ')' : '') : '') + ' · 신고자 ' + user.name);
   }
   return { ok: true, issueId: issueId, issues: listIssues_({}), snapshot: snapshot_() };
 }
 function listIssues_(f) {
   var rows = readTable_('Issues').rows;
   if (f && f.status && f.status !== 'ALL') rows = rows.filter(function (r) { return r.status === f.status; });
-  if (f && f.lotNo) rows = rows.filter(function (r) { return String(r.lot_no) === String(f.lotNo); });
+  if (f && f.code) rows = rows.filter(function (r) { return String(r.item_code) === String(f.code) && (f.rev === undefined || String(r.rev || '') === String(f.rev || '')); });
   return rows.sort(function (a, b) { return Number(b.reported_at) - Number(a.reported_at); })
     .slice(0, 300)
     .map(function (r) {
       return {
-        id: r.issue_id, lotNo: r.lot_no, itemCode: r.item_code, severity: r.severity, title: r.title,
+        id: r.issue_id, itemCode: r.item_code, rev: r.rev || '', severity: r.severity, title: r.title,
         description: r.description, status: r.status, reportedBy: r.reported_by, reportedAt: Number(r.reported_at) || 0,
         updatedBy: r.updated_by, updatedAt: Number(r.updated_at) || 0, resolutionNote: r.resolution_note,
         photoThumb: r.photo_file_id ? ('https://drive.google.com/thumbnail?id=' + r.photo_file_id + '&sz=w400') : '',
@@ -403,6 +445,7 @@ function updateIssue_(user, p) {
   var t = readTable_('Issues');
   var row = t.rows.filter(function (r) { return String(r.issue_id) === String(p.id); })[0];
   if (!row) throw new Error('신고 건을 찾을 수 없습니다');
+  // Issues 컬럼: issue_id(1)·item_code(2)·rev(3)·severity(4)·title(5)·description(6)·photo_file_id(7)·status(8)·reported_by(9)·reported_at(10)·updated_by(11)·updated_at(12)·resolution_note(13)
   t.sheet.getRange(row._row, 8).setValue(p.status);                       // status
   t.sheet.getRange(row._row, 11).setValue(user.name);                     // updated_by
   t.sheet.getRange(row._row, 12).setValue(Date.now());                    // updated_at
@@ -413,23 +456,21 @@ function updateIssue_(user, p) {
 /* ============ 리포트 (인앱 차트 + Looker Studio 연동용 평탄화 시트) ============ */
 function reportData_() {
   var items = readTable_('Items').rows;
-  var lots = readTable_('Lots').rows;
   var hist = readTable_('History').rows;
-  var warnDays = Number(settingsGet_('expiryWarnDays', 30)) || 30;
-  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   var stockByItem = items.map(function (it) {
-    var qty = lots.filter(function (l) { return String(l.item_code) === String(it.item_code); }).reduce(function (s, l) { return s + (Number(l.qty) || 0); }, 0);
-    return { code: it.item_code, name: it.name, unit: it.unit, qty: qty, safetyStock: Number(it.safety_stock) || 0 };
+    return { code: it.item_code, rev: String(it.rev || ''), name: it.name, unit: it.unit, qty: Number(it.stock) || 0, safetyStock: Number(it.safety_stock) || 0, group: groupCodeOf_(it.item_code) };
   }).sort(function (a, b) { return b.qty - a.qty; });
 
-  var expiring = lots.filter(function (l) {
-    var it = items.filter(function (i) { return String(i.item_code) === String(l.item_code); })[0];
-    if (!it || !Number(it.shelf_life_days) || Number(l.qty) <= 0) return false;
-    var d = new Date(l.mfg_date); d.setDate(d.getDate() + Number(it.shelf_life_days));
-    var dday = Math.ceil((d - new Date(todayStr)) / 86400000);
-    return dday <= warnDays;
-  }).length;
+  // 제품군별 집계 (품번 앞자리 기준)
+  var byGroup = {};
+  items.forEach(function (it) {
+    var g = groupCodeOf_(it.item_code);
+    if (!byGroup[g]) byGroup[g] = { group: g, name: GROUP_NAMES[g] || g, items: 0, qty: 0, low: 0 };
+    byGroup[g].items++; byGroup[g].qty += Number(it.stock) || 0;
+    if (Number(it.safety_stock) > 0 && Number(it.stock) < Number(it.safety_stock)) byGroup[g].low++;
+  });
+  var groupBreakdown = Object.keys(byGroup).map(function (k) { return byGroup[k]; }).sort(function (a, b) { return b.qty - a.qty; });
 
   // 최근 14일 입출고 추이
   var days = [];
@@ -448,10 +489,11 @@ function reportData_() {
 
   return {
     stockByItem: stockByItem,
+    groupBreakdown: groupBreakdown,
     lowStockCount: stockByItem.filter(function (s) { return s.safetyStock > 0 && s.qty < s.safetyStock; }).length,
-    expiringCount: expiring,
     openIssueCount: readTable_('Issues').rows.filter(function (r) { return r.status !== '완료'; }).length,
-    totalItems: items.length, totalLots: lots.length,
+    totalItems: items.length,
+    totalStock: items.reduce(function (s, it) { return s + (Number(it.stock) || 0); }, 0),
     trend: trend
   };
 }
@@ -460,29 +502,29 @@ function reportData_() {
    품목명/단위 등을 조인해 평탄화한 참조용 시트를 재생성한다. */
 function rebuildReports_() {
   var items = readTable_('Items').rows, locs = readTable_('Locations').rows;
-  var itemMap = {}; items.forEach(function (i) { itemMap[i.item_code] = i; });
+  var itemMap = {}; items.forEach(function (i) { itemMap[String(i.item_code).toUpperCase() + '|' + String(i.rev || '').toUpperCase()] = i; });
   var locMap = {}; locs.forEach(function (l) { locMap[l.location_code] = l; });
 
-  var stockSh = getOrCreate_('Report_Stock', ['lot_no', 'item_code', 'item_name', 'unit', 'qty', 'safety_stock', 'mfg_date', 'location_code', 'warehouse']);
-  var lots = readTable_('Lots').rows;
-  stockSh.getRange(2, 1, Math.max(stockSh.getMaxRows() - 1, 1), 9).clearContent();
-  if (lots.length) {
-    var stockRows = lots.map(function (l) {
-      var it = itemMap[l.item_code] || {}; var loc = locMap[l.location] || {};
-      return [l.lot_no, l.item_code, it.name || '', it.unit || '', Number(l.qty) || 0, Number(it.safety_stock) || 0, l.mfg_date, l.location || '', loc.warehouse || ''];
+  // 품번+리비전 단위 재고 (한 행 = 한 (품번,리비전)) · 제품군 컬럼 포함
+  var stockSh = getOrCreate_('Report_Stock', ['item_code', 'rev', 'item_name', 'group_code', 'group_name', 'unit', 'stock', 'safety_stock', 'location_code', 'warehouse']);
+  stockSh.getRange(2, 1, Math.max(stockSh.getMaxRows() - 1, 1), 10).clearContent();
+  if (items.length) {
+    var stockRows = items.map(function (it) {
+      var loc = locMap[it.location] || {}, g = groupCodeOf_(it.item_code);
+      return [it.item_code, it.rev || '', it.name || '', g, GROUP_NAMES[g] || g, it.unit || '', Number(it.stock) || 0, Number(it.safety_stock) || 0, it.location || '', loc.warehouse || ''];
     });
-    stockSh.getRange(2, 1, stockRows.length, 9).setValues(stockRows);
+    stockSh.getRange(2, 1, stockRows.length, 10).setValues(stockRows);
   }
 
-  var txSh = getOrCreate_('Report_Tx', ['ts', 'date', 'type', 'lot_no', 'item_code', 'item_name', 'qty', 'location', 'user']);
+  var txSh = getOrCreate_('Report_Tx', ['ts', 'date', 'type', 'item_code', 'rev', 'item_name', 'group_code', 'qty', 'location', 'user']);
   var hist = readTable_('History').rows;
-  txSh.getRange(2, 1, Math.max(txSh.getMaxRows() - 1, 1), 9).clearContent();
+  txSh.getRange(2, 1, Math.max(txSh.getMaxRows() - 1, 1), 10).clearContent();
   if (hist.length) {
     var txRows = hist.map(function (h) {
-      var it = itemMap[h.item_code] || {};
-      return [Number(h.ts) || 0, Utilities.formatDate(new Date(Number(h.ts) || 0), Session.getScriptTimeZone(), 'yyyy-MM-dd'), h.type, h.lot_no, h.item_code, it.name || '', Number(h.qty) || 0, h.location || '', h.user];
+      var it = itemMap[String(h.item_code).toUpperCase() + '|' + String(h.rev || '').toUpperCase()] || {};
+      return [Number(h.ts) || 0, Utilities.formatDate(new Date(Number(h.ts) || 0), Session.getScriptTimeZone(), 'yyyy-MM-dd'), h.type, h.item_code, h.rev || '', it.name || '', groupCodeOf_(h.item_code), Number(h.qty) || 0, h.location || '', h.user];
     });
-    txSh.getRange(2, 1, txRows.length, 9).setValues(txRows);
+    txSh.getRange(2, 1, txRows.length, 10).setValues(txRows);
   }
 }
 function getOrCreate_(name, headers) {
@@ -509,41 +551,28 @@ function notifyChat_(text) {
 
 /** 시간 트리거 대상 함수. force=true 이면 수신자가 없어도 시도(테스트용 로그만 남김) */
 function sendDailyDigest_(force) {
-  var items = readTable_('Items').rows, lots = readTable_('Lots').rows;
-  var warnDays = Number(settingsGet_('expiryWarnDays', 30)) || 30;
+  var items = readTable_('Items').rows;
   var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
 
   var low = items.map(function (it) {
-    var qty = lots.filter(function (l) { return String(l.item_code) === String(it.item_code); }).reduce(function (s, l) { return s + (Number(l.qty) || 0); }, 0);
-    return { name: it.name, unit: it.unit, qty: qty, safety: Number(it.safety_stock) || 0 };
+    return { sku: it.item_code + (it.rev ? ' (' + it.rev + ')' : ''), name: it.name, unit: it.unit, qty: Number(it.stock) || 0, safety: Number(it.safety_stock) || 0 };
   }).filter(function (i) { return i.safety > 0 && i.qty < i.safety; });
-
-  var expiring = [];
-  lots.forEach(function (l) {
-    var it = items.filter(function (i) { return String(i.item_code) === String(l.item_code); })[0];
-    if (!it || !Number(it.shelf_life_days) || Number(l.qty) <= 0) return;
-    var d = new Date(l.mfg_date); d.setDate(d.getDate() + Number(it.shelf_life_days));
-    var dday = Math.ceil((d - new Date(todayStr)) / 86400000);
-    if (dday <= warnDays) expiring.push({ lotNo: l.lot_no, name: it.name, dday: dday, qty: l.qty, unit: it.unit });
-  });
   var openIssues = readTable_('Issues').rows.filter(function (r) { return r.status !== '완료'; });
 
   var lines = [];
-  lines.push('<h2>LOT-IMS 일일 재고 알림 (' + todayStr + ')</h2>');
+  lines.push('<h2>재고 일일 알림 (' + todayStr + ')</h2>');
   lines.push('<p><b>안전재고 미달: ' + low.length + '건</b></p>');
-  if (low.length) lines.push('<ul>' + low.map(function (i) { return '<li>' + i.name + ' — 현재고 ' + i.qty + i.unit + ' / 안전재고 ' + i.safety + i.unit + '</li>'; }).join('') + '</ul>');
-  lines.push('<p><b>유통기한 임박(' + warnDays + '일 이내): ' + expiring.length + '건</b></p>');
-  if (expiring.length) lines.push('<ul>' + expiring.map(function (e) { return '<li>' + e.lotNo + ' (' + e.name + ') — ' + (e.dday <= 0 ? '만료' : 'D-' + e.dday) + ', 재고 ' + e.qty + e.unit + '</li>'; }).join('') + '</ul>');
+  if (low.length) lines.push('<ul>' + low.map(function (i) { return '<li>' + i.name + ' [' + i.sku + '] — 현재고 ' + i.qty + i.unit + ' / 안전재고 ' + i.safety + i.unit + '</li>'; }).join('') + '</ul>');
   lines.push('<p><b>미해결 품질신고: ' + openIssues.length + '건</b></p>');
   var html = lines.join('\n');
 
   var emails = String(settingsGet_('alertEmails', '')).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
   var sent = false;
   if (emails.length) {
-    MailApp.sendEmail({ to: emails.join(','), subject: '[LOT-IMS] 일일 재고 알림 (' + todayStr + ')', htmlBody: html });
+    MailApp.sendEmail({ to: emails.join(','), subject: '[재고관리] 일일 재고 알림 (' + todayStr + ')', htmlBody: html });
     sent = true;
   }
-  notifyChat_('📋 일일 재고 알림 — 안전재고 미달 ' + low.length + '건 · 유통기한 임박 ' + expiring.length + '건 · 미해결 신고 ' + openIssues.length + '건');
+  notifyChat_('📋 일일 재고 알림 — 안전재고 미달 ' + low.length + '건 · 미해결 신고 ' + openIssues.length + '건');
   return sent;
 }
 function installDailyAlerts_() {
@@ -570,21 +599,49 @@ function setPw_(id, newPwHash) {
   t.sheet.getRange(u._row, 4).setValue(newPwHash);
   return { ok: true };
 }
+var PN_RE = /^[A-Z0-9][A-Z0-9-]{1,23}$/;   // 품번: 영문/숫자/하이픈 (예: RP-303-013)
 function addItem_(p) {
-  var code = String(p.code || '').toUpperCase();
-  if (!/^[A-Z0-9]{2,12}$/.test(code)) throw new Error('품목코드는 영문/숫자 2~12자');
-  if (!p.name) throw new Error('품목명을 입력하세요');
-  if (readTable_('Items').rows.some(function (i) { return String(i.item_code) === code; })) throw new Error('이미 존재하는 코드');
-  appendRow_('Items', { item_code: code, name: p.name, unit: p.unit || 'EA', safety_stock: Number(p.safetyStock) || 0, shelf_life_days: Number(p.shelfLifeDays) || 0 });
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  if (!PN_RE.test(code)) throw new Error('품번 형식이 올바르지 않습니다 (영문/숫자/하이픈)');
+  if (!p.name) throw new Error('품명을 입력하세요');
+  if (findItem_(readTable_('Items').rows, code, rev)) throw new Error('이미 존재하는 품번/리비전');
+  appendRow_('Items', { item_code: code, rev: rev, name: p.name, unit: p.unit || 'EA', safety_stock: Number(p.safetyStock) || 0, stock: 0, location: '' });
   rebuildReports_();
   return { ok: true, snapshot: snapshot_() };
 }
 function delItem_(p) {
-  var hasStock = readTable_('Lots').rows.some(function (l) { return String(l.item_code) === String(p.code) && Number(l.qty) > 0; });
-  if (hasStock) throw new Error('재고가 남아 있는 품목은 삭제할 수 없습니다');
-  var r = delRow_('Items', 'item_code', p.code, null);
+  var t = readTable_('Items');
+  var item = findItem_(t.rows, p.code, p.rev);
+  if (!item) throw new Error('대상을 찾을 수 없습니다');
+  if (Number(item.stock) > 0) throw new Error('재고가 남아 있는 품번은 삭제할 수 없습니다');
+  t.sheet.deleteRow(item._row);
   rebuildReports_();
-  return r;
+  return { ok: true, snapshot: snapshot_() };
+}
+/* 여러 품번을 한 번에 등록 — 행별 성공/실패를 모아 반환(부분 성공 허용) */
+function bulkAddItem_(p) {
+  var rows = p.rows || [];
+  if (!rows.length) throw new Error('등록할 품번이 없습니다');
+  if (rows.length > 200) throw new Error('한 번에 최대 200건까지 등록할 수 있습니다');
+  var existing = {};
+  readTable_('Items').rows.forEach(function (r) { existing[String(r.item_code).toUpperCase() + '|' + String(r.rev || '').toUpperCase()] = true; });
+  var results = [];
+  rows.forEach(function (row, i) {
+    try {
+      var code = String(row.code || '').toUpperCase(), rev = String(row.rev || '').toUpperCase();
+      if (!PN_RE.test(code)) throw new Error('품번 형식 오류 (영문/숫자/하이픈)');
+      if (!row.name) throw new Error('품명을 입력하세요');
+      var key = code + '|' + rev;
+      if (existing[key]) throw new Error('이미 존재하는 품번/리비전');
+      appendRow_('Items', { item_code: code, rev: rev, name: row.name, unit: row.unit || 'EA', safety_stock: Number(row.safetyStock) || 0, stock: 0, location: '' });
+      existing[key] = true;   // 배치 내 중복도 차단
+      results.push({ idx: i, code: code, rev: rev, ok: true });
+    } catch (err) {
+      results.push({ idx: i, code: row.code, rev: row.rev, ok: false, error: String(err && err.message ? err.message : err) });
+    }
+  });
+  rebuildReports_();
+  return { ok: true, results: results, snapshot: snapshot_() };
 }
 function addLoc_(p) {
   var code = String(p.code || '').toUpperCase();
@@ -594,12 +651,12 @@ function addLoc_(p) {
   return { ok: true, snapshot: snapshot_() };
 }
 function delLoc_(p) {
-  var used = readTable_('Lots').rows.some(function (l) { return String(l.location) === String(p.code) && Number(l.qty) > 0; });
+  var used = readTable_('Items').rows.some(function (i) { return String(i.location) === String(p.code) && Number(i.stock) > 0; });
   if (used) throw new Error('재고가 보관 중인 위치는 삭제할 수 없습니다');
   return delRow_('Locations', 'location_code', p.code, null);
 }
 function wipe_() {
-  ['Items', 'Lots', 'Locations', 'History', 'Documents', 'Issues'].forEach(function (name) {
+  ['Items', 'Locations', 'History', 'Documents', 'Issues'].forEach(function (name) {
     var sh = sheet_(name);
     if (sh.getLastRow() > 1) sh.deleteRows(2, sh.getLastRow() - 1);
   });

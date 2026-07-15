@@ -12,9 +12,8 @@ const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwVVsBIH-uCV_5t
 /* ---------- 전역 상태 ---------- */
 const S = {
   api:'', auth:null, me:null,
-  users:[], items:[], lots:[], locs:[], hist:[], histTotal:0, openIssueCount:0,
+  users:[], items:[], locs:[], hist:[], histTotal:0, openIssueCount:0,
   tab:'scan',
-  invOpen:new Set(),
   scanTarget:null, scanMode:'IN',
   scanner:null, scanning:false,
   lastScan:{code:'',at:0},
@@ -25,6 +24,30 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => Number(n||0).toLocaleString('ko-KR');
 const today = () => new Date().toISOString().slice(0,10);
+
+/* ---------- 품번 / 리비전 / 제품군 헬퍼 ----------
+   식별 단위 = 품번(code) + 리비전(rev). 바코드 = "품번 (리비전)" 예) RP-303-013 (D)
+   품번 = 제품군코드(RP)-블록코드(303)-시리얼(013). 제품군은 앞자리에서 도출. */
+const GROUP_NAMES = { RP:'PARKIE', RD:'DD-DRIVING', RG:'GOALIE', RZ:'COMMON PARTS', RQ:'QD-DRIVING', RS:'STANLEY' };
+const GROUP_ORDER = ['RP','RD','RG','RZ','RQ','RS'];
+const groupCodeOf = code => String(code||'').split('-')[0].toUpperCase();
+const groupNameOf = code => GROUP_NAMES[groupCodeOf(code)] || '기타';
+const skuOf = (code, rev) => rev ? `${code} (${rev})` : String(code||'');
+/* 스캔/입력 문자열을 품번+리비전으로 분해. "RP-303-013 (D)" → {code:'RP-303-013', rev:'D'} */
+function parseScan(raw){
+  const s = String(raw??'').trim();
+  const m = s.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+  if(m) return { code: m[1].trim().toUpperCase(), rev: m[2].trim().toUpperCase() };
+  return { code: s.toUpperCase(), rev: '' };
+}
+/* 스캔 문자열을 실제 품목으로 해석. 리비전 있으면 정확 매칭; 없으면 해당 품번이 유일할 때만 반환 */
+function resolveScan(raw){
+  const { code, rev } = parseScan(raw);
+  if(rev) return { item: findItem(code, rev), code, rev, ambiguous:false };
+  const cands = S.items.filter(i=>i.code===code);
+  if(cands.length===1) return { item: cands[0], code, rev: cands[0].rev||'', ambiguous:false };
+  return { item: null, code, rev:'', ambiguous: cands.length>1 };
+}
 
 function toast(msg, kind=''){
   const el = document.createElement('div');
@@ -74,7 +97,7 @@ async function api(action, payload={}, opt={}){
   return json;
 }
 function applySnapshot(d){
-  S.users = d.users||[]; S.items = d.items||[]; S.lots = d.lots||[];
+  S.users = d.users||[]; S.items = d.items||[];
   S.locs = d.locs||[]; S.hist = d.hist||[]; S.histTotal = d.histTotal ?? (d.hist||[]).length;
   S.openIssueCount = d.openIssueCount ?? S.openIssueCount ?? 0;
 }
@@ -87,19 +110,12 @@ async function busy(btn, fn){
   try{ await fn(); } finally{ if(document.body.contains(btn)){ btn.disabled=false; btn.textContent=t; } }
 }
 
-/* ---------- 조회 헬퍼 ---------- */
-const itemOf = code => S.items.find(i=>i.code===code);
-const lotOf  = no   => S.lots.find(l=>l.lotNo===no);
+/* ---------- 조회 헬퍼 (품번+리비전 기반) ---------- */
+const itemOf = code => S.items.find(i=>i.code===code);                          // 품번으로 첫 항목(느슨한 조회·표시용)
+const findItem = (code, rev) => S.items.find(i=>i.code===code && String(i.rev||'')===String(rev||''));  // 정확 매칭
 const locOf  = code => S.locs.find(l=>l.code===code);
-function expiryOf(lot){
-  const it = itemOf(lot.itemCode);
-  if(!it || !it.shelfLifeDays) return null;
-  const d = new Date(lot.mfgDate); d.setDate(d.getDate()+Number(it.shelfLifeDays));
-  return d.toISOString().slice(0,10);
-}
-function dday(dateStr){ return dateStr ? Math.ceil((new Date(dateStr)-new Date(today()))/86400000) : null; }
-function itemQty(code){ return S.lots.filter(l=>l.itemCode===code).reduce((s,l)=>s+Number(l.qty||0),0); }
-function lowStockItems(){ return S.items.filter(i=>i.safetyStock>0 && itemQty(i.code) < i.safetyStock); }
+function itemQty(code, rev){ return Number(findItem(code,rev)?.stock||0); }      // 재고는 (품번+리비전) 행에 직접 저장
+function lowStockItems(){ return S.items.filter(i=>i.safetyStock>0 && Number(i.stock||0) < i.safetyStock); }
 
 /* ---------- 로그인 ---------- */
 async function doLogin(){
@@ -119,6 +135,7 @@ async function doLogin(){
       $('#appView').classList.remove('hidden');
       $('#whoName').textContent = S.me.name;
       $('#whoRole').textContent = S.me.role==='admin' ? '관리자' : '작업자';
+      $('#whoAvatar').textContent = (S.me.name||'?').trim().slice(0,1).toUpperCase();
       buildTabs(); go('scan');
     }catch(e){ toast(e.message,'err'); }
   });
@@ -134,13 +151,13 @@ function doLogout(){
 /* ---------- 탭/라우팅 ---------- */
 const TABS = [
   { id:'scan',  ic:'📷', label:'스캔' },
-  { id:'label', ic:'🏷️', label:'바코드' },
   { id:'inv',   ic:'📦', label:'재고' },
   { id:'loc',   ic:'🗺️', label:'위치' },
   { id:'hist',  ic:'🧾', label:'이력' },
 ];
-const MORE_TABS = ['doc','issue','report'];
+const MORE_TABS = ['bulkio','doc','issue','report'];
 const MORE_META = {
+  bulkio: { ic:'📥', label:'일괄 입출고', desc:'여러 로트를 표로 한 번에 입·출고 (붙여넣기 지원)' },
   doc:    { ic:'📁', label:'문서함',     desc:'로트별 사진·문서 보관 (Google Drive)' },
   issue:  { ic:'🚨', label:'품질신고',   desc:'이상 신고 접수 및 처리 현황' },
   report: { ic:'📊', label:'리포트',     desc:'재고 통계 · 대시보드 · Looker Studio' },
@@ -177,8 +194,8 @@ async function go(tab){
 /* 현재 탭을 메모리 상태(S)로 렌더 — 시트 재조회 없음 */
 function renderCurrent(){
   renderAlerts();
-  ({scan:renderScan, label:renderLabel, inv:renderInv, loc:renderLoc, hist:renderHist, admin:renderAdmin,
-    doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
+  ({scan:renderScan, inv:renderInv, loc:renderLoc, hist:renderHist, admin:renderAdmin,
+    bulkio:renderBulkIO, doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
 }
 /* 수동 새로고침 — 다른 사용자가 시트를 바꿨을 때 최신 데이터로 동기화 */
 async function refreshNow(){
@@ -203,46 +220,60 @@ document.addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal()
 /* =========================================================
    재고 현황
 ========================================================= */
+const grpOrd = g => { const i = GROUP_ORDER.indexOf(g); return i<0?99:i; };
 function renderInv(){
   const q = (S._invQ||'').toLowerCase();
-  const items = S.items.filter(i=>!q || i.name.toLowerCase().includes(q) || i.code.toLowerCase().includes(q));
+  const gf = S._invGroup || '';
+  S._invCollapsed = S._invCollapsed || new Set();
+
+  // 제품군 통계(칩용 · 검색과 무관하게 전체 기준)
+  const stat = {};
+  S.items.forEach(i=>{ const g=groupCodeOf(i.code); const s=stat[g]||(stat[g]={n:0,low:0}); s.n++; if(i.safetyStock>0&&Number(i.stock||0)<i.safetyStock) s.low++; });
+  const statKeys = Object.keys(stat).sort((a,b)=>grpOrd(a)-grpOrd(b));
+  const chip = (val,label,n,low)=>`<button class="grp-chip ${gf===val?'on':''}" data-grp="${esc(val)}">${esc(label)}<span class="grp-n">${n}</span>${low?`<span class="grp-low">${low}</span>`:''}</button>`;
+  const chips = `<div class="grp-chips">${chip('','전체',S.items.length,lowStockItems().length)}${statKeys.map(g=>chip(g,GROUP_NAMES[g]||g,stat[g].n,stat[g].low)).join('')}</div>`;
+
+  // 검색 + 제품군 필터
+  let items = S.items.filter(i=>!q || (i.name||'').toLowerCase().includes(q) || i.code.toLowerCase().includes(q) || String(i.rev||'').toLowerCase().includes(q));
+  if(gf) items = items.filter(i=>groupCodeOf(i.code)===gf);
+
+  // 제품군별 그룹 섹션
+  const groups = {};
+  items.forEach(i=>{ const g=groupCodeOf(i.code); (groups[g]=groups[g]||[]).push(i); });
+  const showKeys = Object.keys(groups).sort((a,b)=>grpOrd(a)-grpOrd(b));
+  const sections = showKeys.length ? showKeys.map(g=>{
+    const arr = groups[g].slice().sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev)));
+    const lowN = arr.filter(i=>i.safetyStock>0 && Number(i.stock||0)<i.safetyStock).length;
+    const collapsed = S._invCollapsed.has(g);
+    return `<div class="grp-sec">
+      <button class="grp-head" data-gtoggle="${esc(g)}">
+        <span class="grp-title">${esc(GROUP_NAMES[g]||g)} <span class="muted" style="font-family:var(--mono);font-weight:400">${esc(g)}</span></span>
+        <span class="grp-meta">${lowN?`<span class="chip chip-warn">미달 ${lowN}</span>`:''}<span class="chip chip-gray">품번 ${arr.length}</span><span class="grp-caret">${collapsed?'▸':'▾'}</span></span>
+      </button>
+      ${collapsed?'':`<div class="grp-body">${arr.map(invCard).join('')}</div>`}
+    </div>`;
+  }).join('') : `<div class="empty"><b>표시할 품번이 없습니다</b>${S.items.length?'검색·필터를 조정하세요.':'AppSheet 동기화 또는 관리 탭에서 품번을 등록하세요.'}</div>`;
+
   $('#main').innerHTML = `
-    <div class="sec-title">📦 재고 현황 <small>품목 ${S.items.length} · 로트 ${S.lots.length} · 구글시트 실시간</small></div>
-    <div class="searchbar"><input id="invQ" placeholder="품목명 / 품목코드 검색" value="${esc(S._invQ||'')}"></div>
-    ${items.length? items.map(invCard).join('') : `<div class="empty"><b>표시할 품목이 없습니다</b>관리 탭에서 품목을 등록하세요.</div>`}`;
+    <div class="sec-title">📦 재고 현황 <small>품번 ${S.items.length} · 구글시트 실시간</small></div>
+    <div class="searchbar"><input id="invQ" placeholder="품명 / 품번 / 리비전 검색" value="${esc(S._invQ||'')}"></div>
+    ${chips}
+    ${sections}`;
   $('#invQ').oninput = e=>{ S._invQ = e.target.value; renderInv(); const v=$('#invQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
-  document.querySelectorAll('.item-head').forEach(h=>h.onclick=()=>{
-    const c = h.dataset.code;
-    S.invOpen.has(c) ? S.invOpen.delete(c) : S.invOpen.add(c);
-    renderInv();
-  });
+  document.querySelectorAll('[data-grp]').forEach(b=>b.onclick=()=>{ S._invGroup=b.dataset.grp; renderInv(); });
+  document.querySelectorAll('[data-gtoggle]').forEach(b=>b.onclick=()=>{ const g=b.dataset.gtoggle; S._invCollapsed.has(g)?S._invCollapsed.delete(g):S._invCollapsed.add(g); renderInv(); });
 }
 function invCard(it){
-  const qty = itemQty(it.code);
+  const qty = Number(it.stock||0);
   const low = it.safetyStock>0 && qty < it.safetyStock;
-  const lots = S.lots.filter(l=>l.itemCode===it.code && l.qty>0).sort((a,b)=>a.mfgDate.localeCompare(b.mfgDate)); // FIFO
-  const open = S.invOpen.has(it.code);
   const pct = it.safetyStock>0 ? Math.min(100, qty/it.safetyStock*100) : 100;
   return `<div class="item-card">
-    <div class="item-head" data-code="${esc(it.code)}">
-      <div><div class="nm">${esc(it.name)} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
-        <div class="cd">${esc(it.code)} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}</div></div>
-      <div class="qty"><b>${fmt(qty)}</b> <span>${esc(it.unit)}</span><br><span>${open?'접기 ▲':'로트 '+lots.length+'개 ▼'}</span></div>
+    <div class="item-head" style="cursor:default">
+      <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
+        <div class="cd">${esc(skuOf(it.code,it.rev))} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}${it.location?' · 📍'+esc(it.location):''}</div></div>
+      <div class="qty"><b>${fmt(qty)}</b> <span>${esc(it.unit)}</span></div>
     </div>
     ${it.safetyStock>0?`<div style="padding:0 14px 12px"><div class="bar-safety ${low?'low':''}"><i style="width:${pct}%"></i></div></div>`:''}
-    ${open?`<div class="item-body">${
-      lots.length ? lots.map((l,i)=>{
-        const ex = expiryOf(l), d = dday(ex);
-        return `<div class="lot-line">
-          ${i===0?'<span class="chip chip-gray">FIFO 우선</span>':''}
-          <span class="ln">${esc(l.lotNo)}</span>
-          <span class="loc">${esc(l.location||'위치 미지정')}</span>
-          <span class="muted">제조 ${esc(l.mfgDate)}</span>
-          ${ex?`<span class="chip ${d<=0?'chip-out':d<=30?'chip-warn':'chip-gray'}">${d<=0?'기한만료':'유통 D-'+d}</span>`:''}
-          <span class="q">${fmt(l.qty)}${esc(it.unit)}</span>
-        </div>`;
-      }).join('') : '<div class="muted" style="padding:6px 0">재고가 있는 로트가 없습니다.</div>'
-    }</div>`:''}
   </div>`;
 }
 
@@ -252,32 +283,32 @@ function invCard(it){
 function renderLoc(){
   const q = (S._locQ||'').trim().toLowerCase();
   let hit = null;
-  if(q) hit = S.lots.filter(l=>l.lotNo.toLowerCase().includes(q));
+  if(q) hit = S.items.filter(i=>i.code.toLowerCase().includes(q) || (i.name||'').toLowerCase().includes(q) || String(i.rev||'').toLowerCase().includes(q));
   const groups = {};
   S.locs.forEach(lc=>groups[lc.code]=[]);
-  S.lots.filter(l=>l.qty>0).forEach(l=>{
-    const k = l.location||'(미지정)';
-    (groups[k] = groups[k]||[]).push(l);
+  S.items.filter(i=>Number(i.stock)>0).forEach(i=>{
+    const k = i.location||'(미지정)';
+    (groups[k] = groups[k]||[]).push(i);
   });
   $('#main').innerHTML = `
     <div class="sec-title">🗺️ 재고 위치 <small>창고/구역/랙</small></div>
-    <div class="searchbar"><input id="locQ" placeholder="로트번호로 위치 찾기" value="${esc(S._locQ||'')}"></div>
-    ${hit ? (hit.length ? hit.map(l=>`
-        <div class="lot-tag"><div class="lot-no">${esc(l.lotNo)}</div>
-        <div class="lot-meta">📍 <b>${esc(l.location||'위치 미지정')}</b> · 재고 ${fmt(l.qty)}${esc(itemOf(l.itemCode)?.unit||'')} · ${esc(itemOf(l.itemCode)?.name||'')}</div></div>`).join('')
-      : `<div class="empty"><b>일치하는 로트가 없습니다</b>로트번호를 다시 확인하세요.</div>`) : ''}
-    ${Object.entries(groups).map(([code,lots])=>{
+    <div class="searchbar"><input id="locQ" placeholder="품번/품명으로 위치 찾기" value="${esc(S._locQ||'')}"></div>
+    ${hit ? (hit.length ? hit.map(i=>`
+        <div class="lot-tag"><div class="lot-no">${esc(skuOf(i.code,i.rev))}</div>
+        <div class="lot-meta">📍 <b>${esc(i.location||'위치 미지정')}</b> · 재고 ${fmt(i.stock)}${esc(i.unit||'')} · ${esc(i.name||'')} · ${esc(groupNameOf(i.code))}</div></div>`).join('')
+      : `<div class="empty"><b>일치하는 품번이 없습니다</b>품번/품명을 다시 확인하세요.</div>`) : ''}
+    ${Object.entries(groups).map(([code,items])=>{
       const lc = locOf(code);
       return `<div class="card">
         <div style="display:flex;align-items:center;gap:8px">
           <b style="font-family:var(--mono)">${esc(code)}</b>
-          <span class="muted">${lc?esc(lc.warehouse+' · '+lc.zone+' · '+lc.rack):'등록되지 않은 위치'}</span>
-          <span class="chip chip-gray" style="margin-left:auto">로트 ${lots.length}</span>
+          <span class="muted">${lc?esc(lc.warehouse+' · '+lc.zone+' · '+lc.rack):code==='(미지정)'?'위치 미지정':'등록되지 않은 위치'}</span>
+          <span class="chip chip-gray" style="margin-left:auto">품번 ${items.length}</span>
         </div>
-        ${lots.length?lots.map(l=>`<div class="lot-line"><span class="ln">${esc(l.lotNo)}</span>
-          <span class="muted">${esc(itemOf(l.itemCode)?.name||l.itemCode)}</span>
-          <span class="q">${fmt(l.qty)}${esc(itemOf(l.itemCode)?.unit||'')}</span></div>`).join('')
-        :'<div class="muted" style="margin-top:6px">보관 중인 로트 없음</div>'}
+        ${items.length?items.map(i=>`<div class="lot-line"><span class="ln">${esc(skuOf(i.code,i.rev))}</span>
+          <span class="muted">${esc(i.name||i.code)}</span>
+          <span class="q">${fmt(i.stock)}${esc(i.unit||'')}</span></div>`).join('')
+        :'<div class="muted" style="margin-top:6px">보관 중인 품번 없음</div>'}
       </div>`;
     }).join('')}`;
   $('#locQ').oninput = e=>{ S._locQ = e.target.value; renderLoc(); const v=$('#locQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
@@ -286,25 +317,25 @@ function renderLoc(){
 /* =========================================================
    이력
 ========================================================= */
-const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', CREATE:'로트생성' };
+const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', CREATE:'생성' };
 function renderHist(){
   const f = S.histFilter;
   const q = (S._histQ||'').toLowerCase();
   const rows = S.hist
     .filter(h=>f==='ALL'||h.type===f)
-    .filter(h=>!q || h.lotNo.toLowerCase().includes(q) || (h.itemCode||'').toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
+    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || (findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'').toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
     .slice().reverse();
   $('#main').innerHTML = `
     <div class="sec-title">🧾 입·출고 이력 <small>전수 ${fmt(S.histTotal)}건 (최근 500건 표시 · 전체는 구글시트 History 탭)</small></div>
-    <div class="searchbar"><input id="histQ" placeholder="로트/품목코드/담당자 검색" value="${esc(S._histQ||'')}">
-      <select id="histF">${['ALL','IN','OUT','MOVE','CREATE'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select></div>
+    <div class="searchbar"><input id="histQ" placeholder="품번/품명/담당자 검색" value="${esc(S._histQ||'')}">
+      <select id="histF">${['ALL','IN','OUT'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select></div>
     <div class="card">${rows.length?rows.map(h=>`
       <div class="hist-line">
         <div class="when">${new Date(h.ts).toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'})}<br>${new Date(h.ts).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</div>
         <div class="what">
           <span class="chip chip-${h.type==='IN'?'in':h.type==='OUT'?'out':h.type==='MOVE'?'move':'gray'}">${TYPE_KO[h.type]||h.type}</span>
-          <span class="ln">${esc(h.lotNo)}</span>
-          <div class="muted">${esc(itemOf(h.itemCode)?.name||h.itemCode||'')} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
+          <span class="ln">${esc(skuOf(h.itemCode,h.rev))}</span>
+          <div class="muted">${esc(findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'')} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
           ${h.type==='IN'||h.type==='OUT'?` · 재고 ${fmt(h.before)}→${fmt(h.after)}`:''}</div>
         </div>
         ${h.type==='IN'?`<div class="q in">+${fmt(h.qty)}</div>`:h.type==='OUT'?`<div class="q out">−${fmt(h.qty)}</div>`:''}

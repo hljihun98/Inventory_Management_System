@@ -43,7 +43,7 @@ input,select,textarea{font:inherit;color:inherit}
 /* ---------- 로그인 ---------- */
 #loginView{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;
   background:radial-gradient(1200px 500px at 50% -10%,var(--acl),transparent 60%),var(--bg)}
-.login-card{width:100%;max-width:390px;background:var(--sf);border:1px solid var(--bd);border-radius:18px;padding:30px 26px;box-shadow:var(--sh2)}
+.login-card{width:100%;max-width:400px;background:var(--sf);border:1px solid var(--bd);border-radius:18px;overflow:hidden;box-shadow:var(--sh2)}
 .brand{display:flex;align-items:center;gap:11px;margin-bottom:8px}
 .brand-mark{width:42px;height:42px;border-radius:11px;background:var(--ac);color:#fff;display:flex;align-items:center;justify-content:center;font-family:var(--fm);font-weight:600;font-size:12px;letter-spacing:-.5px;box-shadow:var(--sh)}
 .brand h1{font-family:var(--fd);font-size:23px;font-weight:800;letter-spacing:-.5px}
@@ -252,3 +252,136 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 .table tr:last-child td{border-bottom:none}
 .empty{padding:36px 12px;text-align:center;color:var(--t3);font-size:13.5px}
 .empty b{display:block;color:var(--t2);margin-bottom:4px;font-size:14.5px}
+
+/* 좁은 화면에서 표가 잘리지 않도록 가로 스크롤 허용 */
+.card:has(>table.table){overflow-x:auto}
+
+/* =========================================================
+   반응형 레이아웃 · 태블릿 / PC 최적화
+   (모바일: 기존 하단 탭바 유지 / 태블릿: 컨테이너·그리드 확장
+    / PC: 좌측 사이드바 내비게이션으로 전환)
+========================================================= */
+
+/* ---------- 태블릿 (768px~1023px) ---------- */
+@media(min-width:768px) and (max-width:1023.98px){
+  #appView{max-width:920px;padding-bottom:92px}
+  nav.tabs{max-width:920px}
+  main{padding:20px 30px}
+  .login-card{max-width:440px}
+  .kpi-grid{grid-template-columns:repeat(4,1fr)}
+  .doc-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .pg{grid-template-columns:repeat(6,1fr)}
+}
+
+/* ---------- PC (1024px~): 좌측 사이드바 내비게이션 ---------- */
+@media(min-width:1024px){
+  :root{--header-h:58px;--sidebar-w:228px}
+
+  #appView{max-width:none;padding-top:var(--header-h);padding-bottom:0}
+  header.app{position:fixed;top:0;left:0;right:0}
+  #alertBar{margin-left:var(--sidebar-w)}
+  main{margin-left:var(--sidebar-w);padding:28px 40px 48px;max-width:1040px}
+
+  nav.tabs{
+    position:fixed;top:var(--header-h);left:0;right:auto;bottom:0;
+    width:var(--sidebar-w);max-width:none;margin:0;
+    flex-direction:column;align-items:stretch;justify-content:flex-start;
+    gap:3px;padding:18px 12px;overflow-y:auto;
+    background:var(--sf);backdrop-filter:none;
+    border-top:none;border-right:1px solid var(--bd);box-shadow:none;
+  }
+  nav.tabs button{
+    flex-direction:row;justify-content:flex-start;align-items:center;
+    gap:11px;padding:10px 13px;border-radius:9px;font-size:13px;
+  }
+  nav.tabs button .ic{font-size:17px}
+  nav.tabs button:hover{background:var(--s2)}
+  nav.tabs button.on{background:var(--acl);box-shadow:inset 3px 0 0 var(--ac)}
+  nav.tabs button.on::after{content:none}
+  nav.tabs button .badge{position:static;margin-left:auto;right:auto;top:auto}
+
+  .kpi-grid{grid-template-columns:repeat(4,1fr)}
+  .doc-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
+  .pg{grid-template-columns:repeat(8,1fr)}
+}
+
+/* ---------- 대형 데스크탑 (1440px~) ---------- */
+@media(min-width:1440px){
+  main{max-width:1160px}
+}
+
+/* =========================================================
+   디자인 폴리시 · ROBOSTOCK 비주얼 이식
+   (로그인 2-패널 / 버튼 호버 글로우 / 카드 액센트 / 히어로 배너 / 아바타)
+========================================================= */
+
+/* ---------- 로그인 2-패널 ---------- */
+.login-brand-panel{background:linear-gradient(145deg,#1E2A78,#3B5BF6 55%,#7B5BF6);color:#fff;padding:22px 26px}
+.login-brand-panel .brand{margin-bottom:0}
+.login-brand-panel .brand-mark{background:rgba(255,255,255,.18);box-shadow:none}
+.login-brand-panel h1{color:#fff}
+.lbp-tag,.lbp-feats{display:none}
+.lbp-feats{list-style:none}
+.login-form-panel{padding:26px 26px 28px}
+.login-form-panel .login-sub{margin-bottom:20px}
+@media(min-width:640px){
+  .login-card{max-width:780px;display:flex}
+  .login-brand-panel{width:300px;flex:none;padding:42px 34px;display:flex;align-items:center}
+  .lbp-tag{display:block;font-family:var(--fd);font-size:25px;font-weight:800;line-height:1.28;margin:20px 0 24px}
+  .lbp-feats{display:flex;flex-direction:column;gap:13px;font-size:13.5px;color:rgba(255,255,255,.92)}
+  .lbp-feats li{display:flex;align-items:center;gap:10px}
+  .lbp-feats li span{font-size:16px;width:22px;text-align:center}
+  .login-form-panel{flex:1;padding:44px 40px;display:flex;flex-direction:column;justify-content:center}
+}
+
+/* ---------- 버튼 호버 글로우 (컬러별 매칭) ---------- */
+.btn-primary,.btn-in,.btn-out,.btn-move{transition:all .16s}
+.btn-primary:hover{background:var(--ac-hover);transform:translateY(-1px);box-shadow:0 6px 18px rgba(59,91,246,.32)}
+.btn-in:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(16,185,129,.32)}
+.btn-out:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(239,68,68,.30)}
+.btn-move:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(59,91,246,.30)}
+.btn-primary:active,.btn-in:active,.btn-out:active,.btn-move:active{transform:translateY(0);box-shadow:none}
+@media(prefers-reduced-motion:reduce){
+  .btn-primary:hover,.btn-in:hover,.btn-out:hover,.btn-move:hover{transform:none}
+}
+
+/* ---------- 카드 상단 액센트 바 유틸리티 ---------- */
+.card.accent{position:relative;overflow:hidden}
+.card.accent::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:var(--ac)}
+
+/* ---------- 그라디언트 히어로 배너 (리포트 등) ---------- */
+.hero-banner{background:linear-gradient(135deg,#1E2A78,#3B5BF6 60%,#7B5BF6);color:#fff;border-radius:14px;padding:18px 20px;margin-bottom:14px;box-shadow:var(--sh2)}
+.hero-banner h3{font-family:var(--fd);font-size:18px;font-weight:800;letter-spacing:-.3px;margin-bottom:3px}
+.hero-banner .hero-sub{font-size:12.5px;color:rgba(255,255,255,.85)}
+.hero-stats{display:flex;gap:26px;margin-top:15px;flex-wrap:wrap}
+.hero-stat b{display:block;font-family:var(--fd);font-size:25px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.05}
+.hero-stat span{font-size:10px;color:rgba(255,255,255,.82);text-transform:uppercase;letter-spacing:.7px;font-family:var(--fm)}
+
+/* ---------- 헤더 사용자 아바타 (좁은 모바일 헤더에선 숨기고 태블릿/PC에서 노출) ---------- */
+.who-avatar{display:none;width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--ac),#7B5BF6);color:#fff;
+  align-items:center;justify-content:center;font-family:var(--fd);font-weight:800;font-size:14px;flex:none}
+@media(min-width:768px){
+  .who-avatar{display:flex;margin-left:auto}
+  header.app .who{margin-left:8px}
+}
+
+/* ---------- 일괄 입출고 표 미세 조정 ---------- */
+.bulk-table td{padding:6px 4px;vertical-align:top}
+.bulk-table .brow-info{margin-top:3px;min-height:14px}
+.bulk-table th{white-space:nowrap}
+
+/* ---------- 제품군 필터 칩 + 그룹 섹션 (재고 현황) ---------- */
+.grp-chips{display:flex;gap:7px;overflow-x:auto;padding-bottom:4px;margin-bottom:12px;-webkit-overflow-scrolling:touch}
+.grp-chip{flex:none;display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border:1.5px solid var(--bd);border-radius:99px;background:var(--sf);font-size:12.5px;font-weight:600;color:var(--t2);white-space:nowrap;transition:all .15s}
+.grp-chip:hover{border-color:var(--ac);color:var(--ac)}
+.grp-chip.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.grp-chip .grp-n{font-family:var(--fm);font-size:11px;background:var(--s3);color:var(--t2);border-radius:99px;padding:1px 6px}
+.grp-chip.on .grp-n{background:rgba(255,255,255,.22);color:#fff}
+.grp-chip .grp-low{font-family:var(--fm);font-size:11px;background:var(--rel);color:var(--re-dark);border-radius:99px;padding:1px 6px}
+.grp-sec{margin-bottom:12px}
+.grp-head{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 13px;background:var(--s2);border:1px solid var(--bd);border-radius:11px;cursor:pointer;transition:background .15s}
+.grp-head:hover{background:var(--s3)}
+.grp-title{font-family:var(--fd);font-weight:800;font-size:15px;display:flex;align-items:center;gap:7px}
+.grp-meta{display:flex;align-items:center;gap:6px}
+.grp-caret{color:var(--t3);font-size:12px;width:14px;text-align:center}
+.grp-body{padding-top:10px}
