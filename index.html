@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>LOT-IMS · 로트 기반 재고관리</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ===== 로그인 ===== -->
+<div id="loginView">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-mark">||| |</div>
+      <h1>LOT-IMS</h1>
+    </div>
+    <p class="login-sub">로트 바코드 입·출고 · 구글 시트 클라우드 재고관리</p>
+    <div class="field"><label>서버 주소 <span style="font-weight:400;color:#7A8494">(Apps Script 웹앱 URL)</span></label><input id="apiUrl" placeholder="https://script.google.com/macros/s/…/exec"></div>
+    <div class="field"><label>아이디</label><input id="loginId" autocomplete="username" placeholder="예: admin"></div>
+    <div class="field"><label>비밀번호</label><input id="loginPw" type="password" autocomplete="current-password" placeholder="비밀번호"></div>
+    <button class="btn btn-primary" id="loginBtn">로그인</button>
+    <div class="first-run">데이터는 연결된 <b>구글 시트</b>에 저장됩니다. 초기 관리자 계정은 <b>admin / admin1234</b> (Apps Script <b>setup</b> 실행 시 생성) — 로그인 후 반드시 변경하세요.</div>
+  </div>
+</div>
+
+<!-- ===== 앱 ===== -->
+<div id="appView" class="hidden">
+  <header class="app">
+    <div class="brand-mark">||| |</div>
+    <div class="ttl">LOT-IMS</div>
+    <div class="who"><b id="whoName"></b><br><span id="whoRole"></span></div>
+    <button id="logoutBtn">로그아웃</button>
+  </header>
+  <div id="alertBar" class="hidden"></div>
+  <main id="main"></main>
+  <nav class="tabs" id="tabs"></nav>
+</div>
+
+<div id="toasts"></div>
+<div id="overlay" class="hidden" role="dialog" aria-modal="true"><div class="modal" id="modalBox"></div></div>
+
+<script src="js/app-core.js"></script>
+<script src="js/app-operations.js"></script>
+<script src="js/app-extra.js"></script>
+</body>
+</html>
