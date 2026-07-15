@@ -7,6 +7,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -33,6 +36,7 @@
     <div class="brand-mark">||| |</div>
     <div class="ttl">LOT-IMS</div>
     <div class="who"><b id="whoName"></b><br><span id="whoRole"></span></div>
+    <button id="refreshBtn" title="시트 최신 데이터로 새로고침">🔄</button>
     <button id="logoutBtn">로그아웃</button>
   </header>
   <div id="alertBar" class="hidden"></div>

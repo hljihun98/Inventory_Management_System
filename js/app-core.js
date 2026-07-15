@@ -6,7 +6,7 @@
 
 /* ▼▼▼ 배포 시 이 값을 본인의 Apps Script 웹앱 URL로 바꾸면
        로그인 화면에서 주소 입력 없이 바로 사용할 수 있습니다. ▼▼▼ */
-const DEFAULT_API_URL = '';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwVVsBIH-uCV_5thk6A9-AziHKwj85pBnbhbbS_0ktleTqDqCqGCvcqt-2UXRXBkpcw/exec';
 /* 예: const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycb.../exec'; */
 
 /* ---------- 전역 상태 ---------- */
@@ -78,7 +78,7 @@ function applySnapshot(d){
   S.locs = d.locs||[]; S.hist = d.hist||[]; S.histTotal = d.histTotal ?? (d.hist||[]).length;
   S.openIssueCount = d.openIssueCount ?? S.openIssueCount ?? 0;
 }
-async function loadAll(){ try{ await api('all'); }catch(e){ toast(e.message,'err'); } }
+async function loadAll(){ try{ await api('all'); S.loaded=true; }catch(e){ toast(e.message,'err'); } }
 
 /* 버튼 로딩 상태 헬퍼 */
 async function busy(btn, fn){
@@ -125,7 +125,7 @@ async function doLogin(){
 }
 function doLogout(){
   stopScan();
-  S.me = null; S.auth = null;
+  S.me = null; S.auth = null; S.loaded = false;
   $('#appView').classList.add('hidden');
   $('#loginView').classList.remove('hidden');
   $('#loginPw').value='';
@@ -167,12 +167,23 @@ function openMoreSheet(){
 async function go(tab){
   if(S.tab==='scan' && tab!=='scan') stopScan();
   S.tab = tab; buildTabs();
-  $('#main').innerHTML = '<div class="empty">시트에서 데이터를 불러오는 중…</div>';
-  await loadAll();                      // 탭 전환 시 구글 시트와 동기화
-  buildTabs();                           // openIssueCount 갱신 반영
+  if(!S.loaded){                          // 시트 전체 로드는 최초 1회만 (이후엔 메모리 상태로 즉시 렌더)
+    $('#main').innerHTML = '<div class="empty">시트에서 데이터를 불러오는 중…</div>';
+    await loadAll();
+    buildTabs();                           // openIssueCount 갱신 반영
+  }
+  renderCurrent();
+}
+/* 현재 탭을 메모리 상태(S)로 렌더 — 시트 재조회 없음 */
+function renderCurrent(){
   renderAlerts();
   ({scan:renderScan, label:renderLabel, inv:renderInv, loc:renderLoc, hist:renderHist, admin:renderAdmin,
-    doc:renderDoc, issue:renderIssue, report:renderReport})[tab]();
+    doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
+}
+/* 수동 새로고침 — 다른 사용자가 시트를 바꿨을 때 최신 데이터로 동기화 */
+async function refreshNow(){
+  await busy($('#refreshBtn'), async ()=>{ await loadAll(); buildTabs(); renderCurrent(); });
+  toast('최신 데이터로 새로고침','ok');
 }
 function renderAlerts(){
   const low = lowStockItems();

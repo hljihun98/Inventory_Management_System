@@ -74,6 +74,18 @@ function triggerDL(canvas, lotNo){
   const a = document.createElement('a');
   a.href = canvas.toDataURL('image/png'); a.download = `label_${lotNo}.png`; a.click();
 }
+/* 사진 확대 라이트박스 (입고 인증사진 등에서 공용 사용) */
+function openLightbox(src){
+  let lb = document.getElementById('lbx');
+  if(!lb){
+    lb = document.createElement('div'); lb.id='lbx'; lb.className='lbx';
+    lb.innerHTML = '<button class="lbx-c" aria-label="닫기">✕</button><img alt="확대 이미지">';
+    lb.onclick = ()=>lb.classList.remove('open');
+    document.body.appendChild(lb);
+  }
+  lb.querySelector('img').src = src;
+  lb.classList.add('open');
+}
 
 /* =========================================================
    스캔 입·출고
@@ -123,6 +135,8 @@ async function onCode(code, manual){
   if(!lot){ if(navigator.vibrate) navigator.vibrate(80); return toast(`등록되지 않은 코드: ${code}`,'err'); }
   if(navigator.vibrate) navigator.vibrate(30);
   S.scanTarget = lot.lotNo; S.scanMode='IN';
+  S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined;   // 새 스캔마다 품질 이상 여부 초기화
+  S._inPhotos=[]; S._inReason='';                                 // 인증사진·사유 초기화
   drawScanPanel();
 }
 function drawScanPanel(){
@@ -131,6 +145,7 @@ function drawScanPanel(){
   const it = itemOf(lot.itemCode);
   const older = S.lots.filter(l=>l.itemCode===lot.itemCode && l.qty>0 && l.mfgDate < lot.mfgDate);
   const ex = expiryOf(lot), d = dday(ex);
+  const st = S._inStatus || '정상';   // 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브)
   $('#scanPanel').innerHTML = `
     <div class="lot-tag scan-hit">
       <div class="lot-no">${esc(lot.lotNo)}</div>
@@ -153,7 +168,26 @@ function drawScanPanel(){
       ${S.scanMode!=='OUT'?`
         <div class="field"><label>${S.scanMode==='MOVE'?'이동할 위치':'보관 위치'}</label>
           <select id="qLoc"><option value="">- 미지정 -</option>${S.locs.map(l=>`<option value="${esc(l.code)}" ${lot.location===l.code&&S.scanMode==='IN'?'selected':''}>${esc(l.code)} · ${esc(l.warehouse)} ${esc(l.zone)} ${esc(l.rack)}</option>`).join('')}</select></div>`:''}
-      <div class="field"><label>사유 (선택)</label><input id="qReason" placeholder="${S.scanMode==='IN'?'예: 정기 입고, 반품 입고':S.scanMode==='OUT'?'예: 생산 투입, 판매 출고':'예: 랙 재배치'}"></div>
+      <div class="field"><label>사유 (선택)</label><input id="qReason" value="${esc(S._inReason||'')}" placeholder="${S.scanMode==='IN'?'예: 정기 입고, 반품 입고':S.scanMode==='OUT'?'예: 생산 투입, 판매 출고':'예: 랙 재배치'}"></div>
+      ${S.scanMode==='IN'?`
+        <div class="field"><label>품질 이상 여부</label>
+          <div class="seg" id="qStatusSeg">
+            <button type="button" data-st="정상" class="${st==='정상'?'on-in':''}">✅ 정상</button>
+            <button type="button" data-st="확인필요" class="${st==='확인필요'?'on-warn':''}">⚠️ 확인필요</button>
+            <button type="button" data-st="이상" class="${st==='이상'?'on-out':''}">❌ 이상</button>
+          </div></div>
+        ${st!=='정상'?`
+          <div class="field"><label>이상 내용</label>
+            <textarea id="qIssue" placeholder="이상 내용을 상세히 기술하세요 (품질신고에 함께 등록됩니다)" style="min-height:56px">${esc(S._inIssue||'')}</textarea></div>
+          <label class="muted" style="display:flex;align-items:center;gap:7px;margin:-4px 0 10px;cursor:pointer">
+            <input type="checkbox" id="qMakeIssue" ${S._inMakeIssue!==false?'checked':''} style="width:auto;flex:none">
+            이 입고 건을 품질신고로 자동 등록 <span class="chip chip-sev-${st==='이상'?'긴급':'경미'}">${st==='이상'?'긴급':'경미'}</span></label>`:''}
+        <div class="field"><label>입고 인증사진 <span class="lbl-hint">(최대 6장 · 처리 시 문서함 저장)</span></label>
+          <div class="pg" id="inPhotos">
+            ${(S._inPhotos||[]).map((p,i)=>`<div class="pw"><img src="data:${p.mimeType};base64,${p.base64}" data-lbx="${i}"><button type="button" class="pd" data-rmph="${i}">✕</button></div>`).join('')}
+            ${(S._inPhotos||[]).length<6?`<label class="pa"><span style="font-size:20px">📷</span><span>추가</span><input type="file" id="inPhotoFile" accept="image/*" capture="environment" multiple hidden></label>`:''}
+          </div></div>
+      `:''}
       ${S.scanMode==='OUT'&&older.length?`<p class="muted" style="margin-bottom:10px">⚠️ <b>FIFO 주의:</b> 더 오래된 로트 ${esc(older[0].lotNo)} (제조 ${esc(older[0].mfgDate)}, ${fmt(older[0].qty)}${esc(it?.unit||'')}) 가 남아 있습니다.</p>`:''}
       <button class="btn ${S.scanMode==='IN'?'btn-in':S.scanMode==='OUT'?'btn-out':'btn-move'}" style="width:100%" id="qGo">
         ${S.scanMode==='IN'?'입고 처리':S.scanMode==='OUT'?'출고 처리':'위치 이동'}</button>
@@ -165,19 +199,71 @@ function drawScanPanel(){
     $('#qMinus').onclick=()=>{ const i=$('#qVal'); i.value=Math.max(1,Number(i.value)-1); };
     $('#qPlus').onclick =()=>{ const i=$('#qVal'); i.value=Number(i.value)+1; };
   }
+  const qr=$('#qReason'); if(qr) qr.oninput=()=>{ S._inReason=qr.value; };   // 재렌더에도 사유 보존
+  if(S.scanMode==='IN'){
+    document.querySelectorAll('#qStatusSeg [data-st]').forEach(b=>b.onclick=()=>{
+      S._inStatus = b.dataset.st; drawScanPanel();          // 상태 전환 → 이상 내용/체크박스 노출 갱신
+    });
+    const qi=$('#qIssue'); if(qi) qi.oninput=()=>{ S._inIssue=qi.value; };   // 재렌더에도 내용 보존
+    const mk=$('#qMakeIssue'); if(mk) mk.onchange=()=>{ S._inMakeIssue=mk.checked; };
+    // 입고 인증사진 추가/삭제/확대 (ROBOSTOCK addPh 모티브)
+    const pf=$('#inPhotoFile');
+    if(pf) pf.onchange = async e=>{
+      const room = 6 - (S._inPhotos||[]).length;
+      const files = Array.from(e.target.files||[]).slice(0, Math.max(0,room));
+      for(const f of files){ try{ (S._inPhotos=S._inPhotos||[]).push(await fileToPayload(f)); }catch(err){ toast(err.message,'err'); } }
+      e.target.value=''; drawScanPanel();
+    };
+    document.querySelectorAll('#inPhotos [data-rmph]').forEach(b=>b.onclick=()=>{ S._inPhotos.splice(Number(b.dataset.rmph),1); drawScanPanel(); });
+    document.querySelectorAll('#inPhotos [data-lbx]').forEach(im=>im.onclick=()=>openLightbox(im.src));
+  }
   $('#qGo').onclick = ()=>busy($('#qGo'), ()=>processTx(lot.lotNo));
 }
 async function processTx(lotNo){
   const mode = S.scanMode;
   const qty = mode==='MOVE' ? 0 : Math.floor(Number($('#qVal').value)||0);
   const loc = mode!=='OUT' ? $('#qLoc').value : '';
-  const reason = $('#qReason').value.trim();
+  let reason = $('#qReason').value.trim();
   if(mode!=='MOVE' && qty<1) return toast('수량은 1 이상이어야 합니다','err');
   if(mode==='MOVE' && !loc) return toast('이동할 위치를 선택하세요','err');
+
+  // ── 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브) ──
+  let status='정상', issue='', makeIssue=false;
+  if(mode==='IN'){
+    status = S._inStatus || '정상';
+    if(status!=='정상'){
+      issue = ($('#qIssue')?.value || S._inIssue || '').trim();
+      if(!issue) return toast('이상 내용을 입력하세요','err');
+      makeIssue = $('#qMakeIssue') ? $('#qMakeIssue').checked : true;
+      if(!confirm(`품질 이상 여부: "${status}"\n${issue}\n\n이대로 입고 처리할까요?`)) return;
+      reason = [reason, `[${status}] ${issue}`].filter(Boolean).join(' | ');  // History.reason 컬럼 재사용
+    }
+  }
   try{
     // 재고 검증·차감·이력 기록은 서버(Apps Script)에서 잠금 후 단일 처리
     const r = await api('tx', { type:mode, lotNo, qty, loc, reason });
-    toast(mode==='IN'?`입고 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`:mode==='OUT'?`출고 −${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`:'위치 이동 완료','ok');
+    // 이상 입고 → 기존 품질신고(Issues) 시스템에 자동 등록
+    if(mode==='IN' && status!=='정상' && makeIssue){
+      const lot = lotOf(lotNo), it = itemOf(lot?.itemCode);
+      const sev = status==='이상' ? '긴급' : '경미';
+      try{
+        await api('reportIssue', { lotNo, severity:sev,
+          title:`입고 시 ${status} — ${it?.name || lot?.itemCode || lotNo}`, description:issue });
+        buildTabs();   // 미해결 신고 배지 갱신
+      }catch(e){ toast('입고는 완료됐지만 품질신고 등록 실패: '+e.message,'err'); }
+    }
+    // 입고 인증사진 → 문서함(Drive) 저장 (ROBOSTOCK 입고 인증사진 모티브)
+    if(mode==='IN' && (S._inPhotos||[]).length){
+      let done=0;
+      for(const p of S._inPhotos){
+        try{ await api('uploadDoc', { lotNo, category:'입고검수', base64:p.base64, fileName:p.fileName, mimeType:p.mimeType }, {noApply:true}); done++; }
+        catch(e){ toast('사진 업로드 실패: '+e.message,'err'); }
+      }
+      if(done) toast(`인증사진 ${done}장 문서함 저장`,'ok');
+    }
+    const stTag = status!=='정상' ? ` ⚠️${status}` : '';
+    toast(mode==='IN'?`입고 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})${stTag}`:mode==='OUT'?`출고 −${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`:'위치 이동 완료','ok');
+    S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined; S._inPhotos=[]; S._inReason='';   // 상태 초기화
     renderAlerts(); drawScanPanel();
   }catch(e){ toast(e.message,'err'); }
 }
@@ -323,8 +409,11 @@ function admData(){
 ========================================================= */
 (function init(){
   $('#apiUrl').value = DEFAULT_API_URL || recall('ims_api');
+  // 기본 서버 주소가 지정돼 있으면 로그인 화면에서 주소 입력칸을 숨긴다
+  if(DEFAULT_API_URL){ const f = $('#apiUrl').closest('.field'); if(f) f.style.display='none'; }
   $('#loginId').value = recall('ims_id');
   $('#loginBtn').onclick = doLogin;
   $('#loginPw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
   $('#logoutBtn').onclick = doLogout;
+  $('#refreshBtn').onclick = refreshNow;
 })();
