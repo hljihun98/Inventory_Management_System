@@ -147,41 +147,85 @@ async function drawIssueList(){
   $('#issueBody').innerHTML = '<div class="empty">불러오는 중…</div>';
   const f = S._issueStatusF || 'ALL';
   try{
-    const r = await api('listIssues', { status:f }, {noApply:true});
+    // 신고 목록 + 편집 중 잠금 현황을 병렬로 조회 (왕복 1회로 단축). 잠금 조회는 실패해도 목록은 표시
+    const [r, lk] = await Promise.all([
+      api('listIssues', { status:f }, {noApply:true}),
+      api('listLocks', { prefix:'issue:' }, {noApply:true}).catch(()=>({ locks:[] }))
+    ]);
+    S._issueLocks = {};
+    (lk.locks||[]).forEach(l=>{ S._issueLocks[l.resource]={ id:l.id, name:l.name, ageSec:l.ageSec }; });
     $('#issueBody').innerHTML = `
       <div class="searchbar"><select id="issF" style="flex:1">${['ALL','접수','처리중','완료'].map(s=>`<option value="${s}" ${f===s?'selected':''}>${s==='ALL'?'전체 상태':s}</option>`).join('')}</select></div>
       ${r.issues.length? r.issues.map(issueCard).join('') : '<div class="empty"><b>신고 내역이 없습니다</b></div>'}`;
-    $('#issF').onchange = e=>{ S._issueStatusF = e.target.value; drawIssueList(); };
+    $('#issF').onchange = async e=>{ S._issueStatusF = e.target.value; if(LOCK.resource) await lockRelease(); drawIssueList(); };   // 필터 변경 = 편집 중단 → 잠금 해제(방치 방지)
     bindIssueEvents();
   }catch(e){ toast(e.message,'err'); }
 }
+/* "N초 전 / N분 전" 표기 */
+const agoText = sec => sec<60 ? `${sec}초 전` : `${Math.floor(sec/60)}분 전`;
+/* 편집 진입 시 잠금 확보 — 다른 사람이 처리 중이면 경고 후 목록을 갱신(잠금 배지 노출)하고 false 반환 */
+async function ensureIssueLock(id){
+  if(LOCK.resource === 'issue:'+id){ lockTouch(); return true; }   // 이미 내가 편집 중 → 활동 시각만 갱신
+  const holder = await lockAcquire('issue:'+id);
+  if(holder){ toast(`${holder.name}님이 처리 중입니다 (${agoText(holder.ageSec)})`,'err'); drawIssueList(); return false; }
+  return true;
+}
 function issueCard(i){
+  const res = 'issue:'+i.id;
+  const lk = (S._issueLocks||{})[res];
+  const lockedByOther = lk && lk.id !== S.me.id;
+  const baseVersion = i.updatedAt || i.reportedAt || '';     // 버전 충돌 감지용 (updateIssue의 baseVersion과 동일 규칙)
   return `<div class="issue-card" data-issue="${esc(i.id)}">
     <div class="ihead">
       <span class="chip chip-sev-${esc(i.severity)}">${esc(i.severity)}</span>
       <span class="chip chip-st-${esc(i.status)}">${esc(i.status)}</span>
       <span class="ititle">${esc(i.title)}</span>
+      ${lockedByOther?`<span class="chip chip-warn" style="margin-left:auto;white-space:nowrap">🔒 ${esc(lk.name)} 처리 중</span>`:''}
     </div>
     ${i.itemCode?`<div class="muted">품번 ${esc(skuOf(i.itemCode,i.rev))} · ${esc(groupNameOf(i.itemCode))} · ${esc(findItem(i.itemCode,i.rev)?.name||itemOf(i.itemCode)?.name||'')}</div>`:''}
     ${i.description?`<div class="idesc">${esc(i.description)}</div>`:''}
     ${i.photoThumb?`<a href="${i.photoView}" target="_blank" rel="noopener"><img src="${i.photoThumb}" loading="lazy"></a>`:''}
     <div class="imeta">신고 ${esc(i.reportedBy)} · ${new Date(i.reportedAt).toLocaleString('ko-KR')}${i.updatedAt?` · 최종수정 ${esc(i.updatedBy)} ${new Date(i.updatedAt).toLocaleDateString('ko-KR')}`:''}</div>
     ${i.resolutionNote?`<div class="muted" style="margin-top:4px">💬 ${esc(i.resolutionNote)}</div>`:''}
-    ${i.status!=='완료'?`
+    ${i.status!=='완료'? (lockedByOther?`
+    <div class="lock-note" style="margin-top:8px;font-size:12.5px;color:var(--out);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      🔒 <b>${esc(lk.name)}</b>님이 처리 중입니다 (${agoText(lk.ageSec)}). 잠시 후 새로고침하세요.
+      ${S.me.role==='admin'?`<button class="btn btn-ghost btn-sm" data-take-issue="${esc(i.id)}">이어받기</button>`:''}
+    </div>`:`
     <div class="issue-actions">
       <select data-st-sel="${esc(i.id)}"><option value="접수" ${i.status==='접수'?'selected':''}>접수</option><option value="처리중" ${i.status==='처리중'?'selected':''}>처리중</option><option value="완료">완료</option></select>
       <input type="text" data-note="${esc(i.id)}" placeholder="처리 메모 (선택)" style="flex:1;min-width:110px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-size:13px">
-      <button class="btn btn-primary btn-sm" data-save-issue="${esc(i.id)}">저장</button>
-    </div>`:''}
+      <button class="btn btn-primary btn-sm" data-save-issue="${esc(i.id)}" data-ver="${esc(baseVersion)}">저장</button>
+    </div>`) :''}
   </div>`;
 }
 function bindIssueEvents(){
+  // 편집을 시작(상태 변경 / 메모 입력)하는 순간 잠금을 확보 → 다른 사람에게 "처리 중" 표시
+  document.querySelectorAll('[data-st-sel]').forEach(sel=>sel.addEventListener('change', ()=>ensureIssueLock(sel.dataset.stSel)));
+  document.querySelectorAll('[data-note]').forEach(inp=>{
+    inp.addEventListener('focus', ()=>ensureIssueLock(inp.dataset.note));
+    inp.addEventListener('input', lockTouch);   // 계속 타이핑 중이면 잠금 유지(방치 아님)
+  });
   document.querySelectorAll('[data-save-issue]').forEach(b=>b.onclick=()=>busy(b, async ()=>{
     const id = b.dataset.saveIssue;
+    if(!(await ensureIssueLock(id))) return;                       // 저장 직전에도 재확인 (경고+차단)
     const status = document.querySelector(`[data-st-sel="${id}"]`).value;
     const note = document.querySelector(`[data-note="${id}"]`).value.trim();
-    try{ await api('updateIssue', { id, status, resolutionNote:note }); toast('업데이트 완료','ok'); drawIssueList(); }
-    catch(e){ toast(e.message,'err'); }
+    const baseVersion = b.dataset.ver || '';
+    try{
+      await api('updateIssue', { id, status, resolutionNote:note, baseVersion });
+      toast('업데이트 완료','ok'); await lockRelease(); drawIssueList();
+    }catch(e){
+      toast(e.message,'err');
+      if(/먼저 수정/.test(e.message)){ await lockRelease(); drawIssueList(); }   // 버전 충돌 → 최신 데이터로 갱신
+    }
+  }));
+  // 관리자: 다른 사람이 처리 중인 건을 강제로 이어받기
+  document.querySelectorAll('[data-take-issue]').forEach(b=>b.onclick=()=>busy(b, async ()=>{
+    const id = b.dataset.takeIssue;
+    if(!confirm('다른 사용자가 처리 중입니다. 편집을 이어받을까요?')) return;
+    await lockAcquire('issue:'+id, true);
+    drawIssueList();
   }));
 }
 
@@ -241,13 +285,30 @@ function drawReport(rep){
       ${trendChart(rep.trend, maxTrend)}
       <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:#7A8494"><span>🟩 입고</span><span>🟥 출고</span></div>
     </div>
+    ${bomSummaryCard()}
     <div class="looker-card">
       📈 <b>더 깊은 분석이 필요하신가요?</b><br>
-      연결된 구글 시트에는 품명·창고 등이 미리 조인된 <b>Report_Stock</b> / <b>Report_Tx</b> 탭이
-      자동으로 최신 상태로 유지됩니다. <a href="https://lookerstudio.google.com" target="_blank" rel="noopener">Looker Studio</a>
-      에서 구글 시트 커넥터로 이 두 탭을 연결하면 기간별 추이, 재고 회전율, 창고별 비교 같은
-      더 정교한 대시보드를 코드 없이 만들고 팀과 공유할 수 있습니다.
+      연결된 구글 시트에는 품명·창고 등이 미리 조인된 <b>Report_Stock</b> / <b>Report_Tx</b> 탭과
+      조립 구조 <b>Report_BOM</b> 탭이 자동으로 최신 상태로 유지됩니다. <a href="https://lookerstudio.google.com" target="_blank" rel="noopener">Looker Studio</a>
+      에서 구글 시트 커넥터로 연결하면 기간별 추이·재고 회전율·창고별 비교 같은 대시보드를 만들 수 있고,
+      <b>Report_BOM</b>의 child_code를 <b>Report_Stock</b>에 조인하면 구성품 실시간 재고까지 함께 볼 수 있습니다.
     </div>`;
+}
+/* 조립 구조(BOM) 요약 카드 — S.bom 기반 (조립가능 상위 몇 개) */
+function bomSummaryCard(){
+  const parents = {};
+  S.bom.forEach(e=>{ const k=bomKey(e.parentCode,e.parentRev); (parents[k]=parents[k]||{code:e.parentCode,rev:e.parentRev||''}); });
+  const list = Object.values(parents);
+  if(!list.length) return '';
+  const rows = list.map(p=>({ p, buildable:buildableOf(p.code,p.rev)||0, name:findItem(p.code,p.rev)?.name||'' }))
+                   .sort((a,b)=>b.buildable-a.buildable).slice(0,8);
+  return `<div class="chart-card">
+    <h4>조립 구조(BOM) · 조립품 ${list.length} · 구성 ${S.bom.length}</h4>
+    ${rows.map(r=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12.5px">
+      <div style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="font-family:var(--mono)">${esc(skuOf(r.p.code,r.p.rev))}</span> <span class="muted">${esc(r.name)}</span></div>
+      <span class="chip ${r.buildable>0?'chip-in':'chip-out'}">조립가능 ${fmt(r.buildable)}</span>
+    </div>`).join('')}
+  </div>`;
 }
 function trendChart(trend, maxV){
   return `<div style="display:flex;align-items:flex-end;gap:2px;height:112px">

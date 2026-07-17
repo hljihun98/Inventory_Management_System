@@ -30,7 +30,9 @@ var SHEET_HEADERS = {
   Settings:     ['key', 'value'],
   Documents:    ['doc_id', 'item_code', 'rev', 'category', 'file_id', 'file_name', 'uploaded_by', 'uploaded_at'],
   Issues:       ['issue_id', 'item_code', 'rev', 'severity', 'title', 'description', 'photo_file_id', 'status', 'reported_by', 'reported_at', 'updated_by', 'updated_at', 'resolution_note'],
-  DevLog:       ['log_id', 'ts', 'author', 'category', 'title', 'content', 'done', 'updated_at']
+  DevLog:       ['log_id', 'ts', 'author', 'category', 'title', 'content', 'done', 'updated_at'],
+  Locks:        ['resource', 'user_id', 'user_name', 'ts'],   // 편집 중 소프트 락 (수정 충돌 방지)
+  BOM:          ['bom_id', 'parent_code', 'parent_rev', 'child_code', 'child_rev', 'qty_per', 'seq', 'memo']   // 조립품 BOM: 한 행 = 부모→자식 엣지 (다단계 = 엣지 체인)
 };
 var DRIVE_FOLDER_NAME = 'LOT-IMS-Files';
 var DEFAULT_SETTINGS = { chatWebhookUrl: '', alertEmails: '', alertHour: '8', driveFolderId: '', syncToken: '' };
@@ -75,7 +77,38 @@ function setup() {
   Object.keys(DEFAULT_SETTINGS).forEach(function (k) {
     if (!existing[k]) appendRow_('Settings', { key: k, value: k === 'driveFolderId' ? folderId : DEFAULT_SETTINGS[k] });
   });
+  bomSheet_();          // BOM 시트 보장
   rebuildReports_();
+  rebuildBomReport_();  // Report_BOM(구조 전용) 생성
+}
+
+/* ============ 관리자 계정 복구 (로그인 안 될 때) ============
+   Apps Script 편집기에서 이 함수를 직접 선택 → 실행하면 admin 계정을 admin/admin1234 로 초기화(없으면 생성)한다.
+   웹앱 재배포가 필요 없다(편집기는 저장된 최신 코드로 실행되고, 로그인은 Users 시트를 직접 조회하므로).
+   실행 후 로그(보기 > 실행 로그)에 진단 정보가 출력된다. */
+function resetAdmin() {
+  var t = readTable_('Users');
+  var u = t.rows.filter(function (r) { return String(r.user_id) === 'admin'; })[0];
+  var hash = sha256_('admin1234');
+  if (u) {
+    t.sheet.getRange(u._row, 3).setValue('admin');   // role
+    t.sheet.getRange(u._row, 4).setValue(hash);       // pw_hash
+  } else {
+    appendRow_('Users', { user_id: 'admin', name: '관리자', role: 'admin', pw_hash: hash, created_at: Date.now() });
+  }
+  var msg = 'admin 계정을 admin/admin1234 로 초기화했습니다. 사용자 수=' + readTable_('Users').rows.length + ', 저장된 해시=' + hash;
+  Logger.log(msg);
+  return msg;
+}
+/* 로그인 진단용 — 편집기에서 실행하면 등록된 사용자 목록과 admin/admin1234 해시를 로그로 확인할 수 있다. */
+function debugLogin() {
+  var rows = readTable_('Users').rows;
+  Logger.log('사용자 ' + rows.length + '명: ' + rows.map(function (r) { return r.user_id + '(' + r.role + ')'; }).join(', '));
+  Logger.log('admin1234 의 해시 = ' + sha256_('admin1234'));
+  var admin = rows.filter(function (r) { return String(r.user_id) === 'admin'; })[0];
+  Logger.log('admin 저장 해시 = ' + (admin ? admin.pw_hash : '(admin 행 없음)'));
+  Logger.log('일치 여부 = ' + (admin && String(admin.pw_hash) === sha256_('admin1234')));
+  return 'debugLogin 완료 — 실행 로그(Ctrl+Enter)를 확인하세요';
 }
 
 function ensureDriveFolder_() {
@@ -119,6 +152,12 @@ function handle_(req) {
     case 'bulkTx':    return withLock_(function () { return bulkTx_(user, req); });
     case 'setMyPw':   return withLock_(function () { return setPw_(user.user_id, req.newPwHash); });
 
+    // ----- 편집 중 소프트 락 (수정 충돌 방지) -----
+    case 'acquireLock': return withLock_(function () { return acquireLock_(user, req); });
+    case 'renewLock':   return withLock_(function () { return renewLock_(user, req); });
+    case 'releaseLock': return withLock_(function () { return releaseLock_(user, req); });
+    case 'listLocks':   return { ok: true, locks: activeLocks_(req.prefix || '') };
+
     // ----- 문서/이미지 (품번 단위) -----
     case 'uploadDoc': return withLock_(function () { return uploadDoc_(user, req); });
     case 'listDocs':  return { ok: true, docs: listDocsForItem_(req.code, req.rev) };
@@ -129,6 +168,10 @@ function handle_(req) {
     case 'listIssues':  return { ok: true, issues: listIssues_(req || {}) };
     case 'updateIssue': return withLock_(function () { return updateIssue_(user, req); });
 
+    // ----- 조립/분해 (BOM 재고 연동) · 모든 로그인 사용자 -----
+    case 'assemble':    return withLock_(function () { return assemble_(user, req); });
+    case 'disassemble': return withLock_(function () { return disassemble_(user, req); });
+
     // ----- 리포트 -----
     case 'reportData': return { ok: true, report: reportData_() };
 
@@ -137,10 +180,16 @@ function handle_(req) {
     case 'delUser':   admin_(user); return withLock_(function () { return delRow_('Users', 'user_id', req.id, req.id === 'admin' ? '기본 관리자는 삭제할 수 없습니다' : null); });
     case 'setUserPw': admin_(user); return withLock_(function () { return setPw_(req.id, req.newPwHash); });
     case 'addItem':   admin_(user); return withLock_(function () { return addItem_(req); });
+    case 'editItem':  admin_(user); return withLock_(function () { return editItem_(user, req); });
     case 'bulkAddItem': admin_(user); return withLock_(function () { return bulkAddItem_(req); });
     case 'delItem':   admin_(user); return withLock_(function () { return delItem_(req); });
     case 'addLoc':    admin_(user); return withLock_(function () { return addLoc_(req); });
     case 'delLoc':    admin_(user); return withLock_(function () { return delLoc_(req); });
+    // ----- 관리자 전용: BOM 구조 편집 -----
+    case 'addBOM':       admin_(user); return withLock_(function () { return addBOM_(req); });
+    case 'bulkAddBOM':   admin_(user); return withLock_(function () { return bulkAddBOM_(req); });
+    case 'delBOM':       admin_(user); return withLock_(function () { return delBOM_(req); });
+    case 'setBOMParent': admin_(user); return withLock_(function () { return setBOMParent_(user, req); });
     case 'wipe':      admin_(user); return withLock_(function () { return wipe_(); });
     case 'getSettings':      admin_(user); return { ok: true, settings: getSettingsObj_() };
     case 'setSettings':      admin_(user); return withLock_(function () { return setSettingsObj_(req.settings || {}); });
@@ -166,6 +215,76 @@ function withLock_(fn) {
   var lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try { return fn(); } finally { lock.releaseLock(); }
+}
+
+/* ============ 편집 중 소프트 락 (수정 충돌 방지) ============
+   한 사용자가 특정 레코드(resource)를 편집하는 동안 다른 사용자에게 알리고 저장을 차단한다.
+   resource 예) 'issue:<id>', 'item:<품번>|<리비전>'.  TTL(3분) 지나면 자동 만료 → 브라우저를 그냥 닫아도 잠금이 풀린다.
+   버전 충돌 감지(baseVersion)가 최종 안전망이므로, 락이 뚫려도 덮어쓰기는 일어나지 않는다. */
+var LOCK_TTL_MS = 3 * 60 * 1000;   // 3분
+function locksSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName('Locks');
+  if (!sh) { sh = ss.insertSheet('Locks'); sh.appendRow(SHEET_HEADERS.Locks); sh.setFrozenRows(1); }  // 기존 설치도 setup 재실행 없이 자동 생성
+  return sh;
+}
+function readLocks_() {
+  var sh = locksSheet_();
+  var last = sh.getLastRow();
+  if (last < 2) return { sheet: sh, rows: [] };
+  var vals = sh.getRange(2, 1, last - 1, 4).getValues();
+  var rows = vals.map(function (v, i) {
+    return { _row: i + 2, resource: String(v[0]), user_id: String(v[1]), user_name: String(v[2]), ts: Number(v[3]) || 0 };
+  });
+  return { sheet: sh, rows: rows };
+}
+function deleteLockRows_(sheet, rows) {   // 여러 행 삭제는 반드시 아래→위 순서로 (인덱스 밀림 방지)
+  rows.sort(function (a, b) { return b._row - a._row; }).forEach(function (r) { sheet.deleteRow(r._row); });
+}
+/* 잠금 획득(신규 진입). 다른 사용자가 유효 잠금을 쥐고 있으면 acquired:false + 보유자 정보 반환.
+   force(강제 이어받기)는 관리자만 허용 — 클라이언트 UI뿐 아니라 서버에서도 검증한다. */
+function acquireLock_(user, p) {
+  var resource = String(p.resource || '');
+  if (!resource) throw new Error('resource가 필요합니다');
+  var force = !!p.force && user.role === 'admin';   // 관리자만 강제 탈취 가능
+  var now = Date.now();
+  var t = readLocks_();
+  var holder = t.rows.filter(function (r) { return r.resource === resource && r.user_id !== user.user_id && (now - r.ts) < LOCK_TTL_MS; })[0];
+  if (holder && !force) {
+    return { ok: true, acquired: false, holder: { id: holder.user_id, name: holder.user_name, ageSec: Math.floor((now - holder.ts) / 1000) } };
+  }
+  // 획득/강제이어받기: 이 resource의 기존 행 + 만료된 다른 모든 행을 정리한 뒤 내 행 추가
+  deleteLockRows_(t.sheet, t.rows.filter(function (r) { return r.resource === resource || (now - r.ts) >= LOCK_TTL_MS; }));
+  t.sheet.appendRow([resource, user.user_id, user.name, now]);
+  return { ok: true, acquired: true, took: !!(holder && force) };
+}
+/* 하트비트 전용 갱신. 내 잠금 행이 "이미 있을 때만" ts를 갱신하고, 없으면 재생성하지 않는다.
+   → 저장 직후 자동해제된 잠금을 in-flight 하트비트가 되살리는 좀비 잠금을 원천 차단.
+   (acquireLock_·updateIssue_·editItem_ 와 함께 모두 withLock_ 로 직렬화되므로 순서 역전이 없다.) */
+function renewLock_(user, p) {
+  var resource = String(p.resource || '');
+  var t = readLocks_();
+  var mine = t.rows.filter(function (r) { return r.resource === resource && r.user_id === user.user_id; })[0];
+  if (!mine) return { ok: true, renewed: false };   // 이미 해제/만료/이어받기됨 → 재생성 안 함
+  t.sheet.getRange(mine._row, 4).setValue(Date.now());
+  return { ok: true, renewed: true };
+}
+function releaseLock_(user, p) {
+  var resource = String(p.resource || '');
+  var t = readLocks_();
+  deleteLockRows_(t.sheet, t.rows.filter(function (r) { return r.resource === resource && r.user_id === user.user_id; }));
+  return { ok: true };
+}
+/* 내부용: 저장 성공 후 자기 잠금을 자동 해제 (이미 withLock_ 안에서 호출됨) */
+function autoReleaseLock_(user, resource) {
+  var t = readLocks_();
+  deleteLockRows_(t.sheet, t.rows.filter(function (r) { return r.resource === resource && r.user_id === user.user_id; }));
+}
+function activeLocks_(prefix) {
+  var now = Date.now();
+  return readLocks_().rows
+    .filter(function (r) { return (now - r.ts) < LOCK_TTL_MS && (!prefix || r.resource.indexOf(prefix) === 0); })
+    .map(function (r) { return { resource: r.resource, id: r.user_id, name: r.user_name, ageSec: Math.floor((now - r.ts) / 1000) }; });
 }
 
 /* ============ 시트 입출력 헬퍼 ============ */
@@ -248,7 +367,10 @@ function snapshot_() {
     return { id: h.tx_id, ts: Number(h.ts) || 0, type: h.type, itemCode: String(h.item_code), rev: String(h.rev || ''), qty: Number(h.qty) || 0, before: Number(h.before) || 0, after: Number(h.after) || 0, location: String(h.location || ''), reason: String(h.reason || ''), user: h.user };
   });
   var openIssues = readTable_('Issues').rows.filter(function (r) { return r.status !== '완료'; }).length;
-  return { users: users, items: items, locs: locs, hist: hist, histTotal: histAll.length, openIssueCount: openIssues };
+  var bom = readBOM_().rows.map(function (e) {
+    return { id: e.bom_id, parentCode: String(e.parent_code), parentRev: String(e.parent_rev || ''), childCode: String(e.child_code), childRev: String(e.child_rev || ''), qtyPer: Number(e.qty_per) || 0, seq: Number(e.seq) || 0, memo: String(e.memo || '') };
+  });
+  return { users: users, items: items, locs: locs, hist: hist, histTotal: histAll.length, openIssueCount: openIssues, bom: bom };
 }
 
 /* ============ 입·출고 트랜잭션 (품번+리비전 기반) ============ */
@@ -398,10 +520,8 @@ function reportIssue_(user, p) {
   if (!p.title) throw new Error('제목을 입력하세요');
   var severity = ['경미', '중대', '긴급'].indexOf(p.severity) >= 0 ? p.severity : '경미';
   var itemCode = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
-  if (itemCode) {
-    var item = findItem_(readTable_('Items').rows, itemCode, rev);
-    if (!item) throw new Error('등록되지 않은 품번/리비전: ' + p.code);
-  }
+  var item = itemCode ? findItem_(readTable_('Items').rows, itemCode, rev) : null;   // Items 시트 1회만 읽어 재사용
+  if (itemCode && !item) throw new Error('등록되지 않은 품번/리비전: ' + p.code);
   var sku = itemCode ? (itemCode + (rev ? ' (' + rev + ')' : '')) : '';
   var photoFileId = '';
   if (p.base64 && p.fileName) {
@@ -419,7 +539,7 @@ function reportIssue_(user, p) {
     status: '접수', reported_by: user.name, reported_at: Date.now(), updated_by: '', updated_at: '', resolution_note: ''
   });
   if (severity === '중대' || severity === '긴급') {
-    var itemName = itemCode ? ((findItem_(readTable_('Items').rows, itemCode, rev) || {}).name || itemCode) : '';
+    var itemName = item ? (item.name || itemCode) : '';
     notifyChat_('🚨 [' + severity + '] 품질 이상신고: ' + p.title + (sku ? ' — ' + sku + (itemName ? ' (' + itemName + ')' : '') : '') + ' · 신고자 ' + user.name);
   }
   return { ok: true, issueId: issueId, issues: listIssues_({}), snapshot: snapshot_() };
@@ -445,11 +565,17 @@ function updateIssue_(user, p) {
   var t = readTable_('Issues');
   var row = t.rows.filter(function (r) { return String(r.issue_id) === String(p.id); })[0];
   if (!row) throw new Error('신고 건을 찾을 수 없습니다');
+  // 버전 충돌 감지: 클라이언트가 화면에 띄운 시점(baseVersion) 이후 다른 사람이 먼저 바꿨으면 거부 (소프트 락이 뚫려도 덮어쓰기 방지)
+  if (p.baseVersion !== undefined && p.baseVersion !== '') {
+    var current = Number(row.updated_at) || Number(row.reported_at) || 0;
+    if (Number(p.baseVersion) !== current) throw new Error('다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요');
+  }
   // Issues 컬럼: issue_id(1)·item_code(2)·rev(3)·severity(4)·title(5)·description(6)·photo_file_id(7)·status(8)·reported_by(9)·reported_at(10)·updated_by(11)·updated_at(12)·resolution_note(13)
   t.sheet.getRange(row._row, 8).setValue(p.status);                       // status
   t.sheet.getRange(row._row, 11).setValue(user.name);                     // updated_by
   t.sheet.getRange(row._row, 12).setValue(Date.now());                    // updated_at
   t.sheet.getRange(row._row, 13).setValue(p.resolutionNote || row.resolution_note || ''); // resolution_note
+  autoReleaseLock_(user, 'issue:' + p.id);                                // 저장 완료 → 내 잠금 해제
   return { ok: true, issues: listIssues_({}), snapshot: snapshot_() };
 }
 
@@ -614,7 +740,28 @@ function delItem_(p) {
   var item = findItem_(t.rows, p.code, p.rev);
   if (!item) throw new Error('대상을 찾을 수 없습니다');
   if (Number(item.stock) > 0) throw new Error('재고가 남아 있는 품번은 삭제할 수 없습니다');
+  if (itemInBom_(readBOM_().rows, item.item_code, item.rev)) throw new Error('BOM에 등록된 품번은 삭제할 수 없습니다 (조립 관계를 먼저 삭제하세요)');
   t.sheet.deleteRow(item._row);
+  rebuildReports_();
+  return { ok: true, snapshot: snapshot_() };
+}
+/* 품번 마스터 필드(품명·단위·안전재고) 수정. stock·location(정본)은 건드리지 않는다.
+   Items 컬럼: item_code(1)·rev(2)·name(3)·unit(4)·safety_stock(5)·stock(6)·location(7)
+   버전 충돌 감지: Items 시트엔 updated_at이 없어 가변필드(name|unit|safety_stock) 스냅샷을 baseVersion으로 비교한다. */
+function editItem_(user, p) {
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  var t = readTable_('Items');
+  var item = findItem_(t.rows, code, rev);
+  if (!item) throw new Error('대상을 찾을 수 없습니다');
+  if (p.baseVersion !== undefined && p.baseVersion !== '') {
+    var current = [item.name, item.unit || 'EA', Number(item.safety_stock) || 0].join('|');
+    if (String(p.baseVersion) !== current) throw new Error('다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요');
+  }
+  if (!p.name) throw new Error('품명을 입력하세요');
+  t.sheet.getRange(item._row, 3).setValue(p.name);                        // name
+  t.sheet.getRange(item._row, 4).setValue(p.unit || 'EA');                // unit
+  t.sheet.getRange(item._row, 5).setValue(Number(p.safetyStock) || 0);    // safety_stock
+  autoReleaseLock_(user, 'item:' + code + '|' + rev);                     // 저장 완료 → 내 잠금 해제
   rebuildReports_();
   return { ok: true, snapshot: snapshot_() };
 }
@@ -660,8 +807,278 @@ function wipe_() {
     var sh = sheet_(name);
     if (sh.getLastRow() > 1) sh.deleteRows(2, sh.getLastRow() - 1);
   });
+  var bsh = bomSheet_();                                   // BOM은 지연생성 시트라 별도 처리
+  if (bsh.getLastRow() > 1) bsh.deleteRows(2, bsh.getLastRow() - 1);
   rebuildReports_();
+  rebuildBomReport_();
   return { ok: true, snapshot: snapshot_() };
+}
+
+/* ============ BOM / 조립(assy) ============
+   BOM 시트: 한 행 = 부모→자식 엣지. 다단계 = 엣지 체인. assy = "BOM에 자식이 있는 품번"(플래그 없음).
+   BOM 컬럼: bom_id(1)·parent_code(2)·parent_rev(3)·child_code(4)·child_rev(5)·qty_per(6)·seq(7)·memo(8) */
+function bomSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName('BOM');
+  if (!sh) { sh = ss.insertSheet('BOM'); sh.appendRow(SHEET_HEADERS.BOM); sh.setFrozenRows(1); }  // 기존 설치도 setup 재실행 없이 자동 생성
+  return sh;
+}
+function readBOM_() {
+  var sh = bomSheet_();
+  var last = sh.getLastRow();
+  if (last < 2) return { sheet: sh, rows: [] };
+  var vals = sh.getRange(2, 1, last - 1, SHEET_HEADERS.BOM.length).getValues();
+  var rows = vals.map(function (v, i) {
+    return { _row: i + 2, bom_id: String(v[0]), parent_code: String(v[1]), parent_rev: String(v[2]), child_code: String(v[3]), child_rev: String(v[4]), qty_per: Number(v[5]) || 0, seq: Number(v[6]) || 0, memo: String(v[7] || '') };
+  });
+  return { sheet: sh, rows: rows };
+}
+function skuText_(code, rev) { return String(code) + (rev ? ' (' + rev + ')' : ''); }
+function bomKey_(c, r) { return String(c || '').toUpperCase() + '|' + String(r || '').toUpperCase(); }
+function childrenOf_(bomRows, code, rev) {
+  var k = bomKey_(code, rev);
+  return bomRows.filter(function (e) { return bomKey_(e.parent_code, e.parent_rev) === k; })
+                .sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+}
+function isAssy_(bomRows, code, rev) {
+  var k = bomKey_(code, rev);
+  return bomRows.some(function (e) { return bomKey_(e.parent_code, e.parent_rev) === k; });
+}
+function itemInBom_(bomRows, code, rev) {
+  var k = bomKey_(code, rev);
+  return bomRows.some(function (e) { return bomKey_(e.parent_code, e.parent_rev) === k || bomKey_(e.child_code, e.child_rev) === k; });
+}
+/* 엣지 P→C 추가 시, C에서 P로 이미 도달 가능하면 순환. seen 가드로 손상 데이터 무한루프 방지. */
+function bomReaches_(bomRows, startKey, targetKey) {
+  if (startKey === targetKey) return true;
+  var adj = {};
+  bomRows.forEach(function (e) {
+    var p = bomKey_(e.parent_code, e.parent_rev);
+    (adj[p] = adj[p] || []).push(bomKey_(e.child_code, e.child_rev));
+  });
+  var stack = [startKey], seen = {};
+  while (stack.length) {
+    var n = stack.pop();
+    if (n === targetKey) return true;
+    if (seen[n]) continue; seen[n] = true;
+    (adj[n] || []).forEach(function (c) { if (!seen[c]) stack.push(c); });
+  }
+  return false;
+}
+function assertNoCycle_(bomRows, pKey, cKey) {
+  if (pKey === cKey) throw new Error('자기 자신을 구성품으로 넣을 수 없습니다');
+  if (bomReaches_(bomRows, cKey, pKey)) throw new Error('순환 구조가 됩니다 (하위 구성품이 이미 상위에 포함됨)');
+}
+/* 조립 가능 수량 = min over children floor(child.stock / qty_per). 자식 없으면 null(조립품 아님). */
+function buildableQty_(bomRows, itemsRows, code, rev) {
+  var kids = childrenOf_(bomRows, code, rev);
+  if (!kids.length) return null;
+  return kids.reduce(function (min, e) {
+    var ci = findItem_(itemsRows, e.child_code, e.child_rev);
+    var per = Number(e.qty_per) || 0;
+    var have = ci ? Number(ci.stock) || 0 : 0;
+    var n = per > 0 ? Math.floor(have / per) : 0;
+    return Math.min(min, n);
+  }, Infinity);
+}
+
+/* ----- BOM 구조 편집 (관리자) ----- */
+function addBOM_(p) {
+  var pc = String(p.parentCode || '').toUpperCase(), pr = String(p.parentRev || '').toUpperCase();
+  var cc = String(p.childCode || '').toUpperCase(), cr = String(p.childRev || '').toUpperCase();
+  var qty = Math.floor(Number(p.qtyPer) || 0);
+  if (!pc || !cc) throw new Error('부모/자식 품번이 필요합니다');
+  if (qty < 1) throw new Error('소요량은 1 이상의 정수여야 합니다');
+  var items = readTable_('Items').rows;
+  if (!findItem_(items, pc, pr)) throw new Error('등록되지 않은 부모 품번/리비전: ' + skuText_(pc, pr));
+  if (!findItem_(items, cc, cr)) throw new Error('등록되지 않은 자식 품번/리비전: ' + skuText_(cc, cr));
+  var t = readBOM_();
+  if (t.rows.some(function (e) { return bomKey_(e.parent_code, e.parent_rev) === bomKey_(pc, pr) && bomKey_(e.child_code, e.child_rev) === bomKey_(cc, cr); }))
+    throw new Error('이미 존재하는 BOM 구성입니다');
+  assertNoCycle_(t.rows, bomKey_(pc, pr), bomKey_(cc, cr));
+  t.sheet.appendRow([uid_(), pc, pr, cc, cr, qty, Number(p.seq) || 0, p.memo || '']);
+  rebuildBomReport_();
+  return { ok: true, snapshot: snapshot_() };
+}
+/* 여러 BOM 엣지를 한 번에 등록 — 행별 성공/실패(부분 성공). 배치 내 중복/순환도 증분 검사. */
+function bulkAddBOM_(p) {
+  var rows = p.rows || [];
+  if (!rows.length) throw new Error('등록할 BOM이 없습니다');
+  if (rows.length > 200) throw new Error('한 번에 최대 200건까지 등록할 수 있습니다');
+  var items = readTable_('Items').rows;
+  var t = readBOM_();
+  var working = t.rows.slice();     // 증분 순환 검사용 (수락된 엣지를 즉시 반영)
+  var existing = {};
+  t.rows.forEach(function (e) { existing[bomKey_(e.parent_code, e.parent_rev) + '>' + bomKey_(e.child_code, e.child_rev)] = true; });
+  var toAppend = [], results = [];
+  rows.forEach(function (row, i) {
+    try {
+      var pc = String(row.parentCode || '').toUpperCase(), pr = String(row.parentRev || '').toUpperCase();
+      var cc = String(row.childCode || '').toUpperCase(), cr = String(row.childRev || '').toUpperCase();
+      var qty = Math.floor(Number(row.qtyPer) || 0);
+      if (!pc || !cc) throw new Error('부모/자식 품번을 입력하세요');
+      if (qty < 1) throw new Error('소요량은 1 이상의 정수');
+      if (!findItem_(items, pc, pr)) throw new Error('미등록 부모: ' + skuText_(pc, pr));
+      if (!findItem_(items, cc, cr)) throw new Error('미등록 자식: ' + skuText_(cc, cr));
+      var ek = bomKey_(pc, pr) + '>' + bomKey_(cc, cr);
+      if (existing[ek]) throw new Error('이미 존재하는 BOM 구성');
+      assertNoCycle_(working, bomKey_(pc, pr), bomKey_(cc, cr));
+      var edge = { bom_id: uid_(), parent_code: pc, parent_rev: pr, child_code: cc, child_rev: cr, qty_per: qty, seq: Number(row.seq) || 0, memo: row.memo || '' };
+      working.push(edge);
+      existing[ek] = true;
+      toAppend.push([edge.bom_id, pc, pr, cc, cr, qty, edge.seq, edge.memo]);
+      results.push({ idx: i, parentCode: pc, parentRev: pr, childCode: cc, childRev: cr, ok: true });
+    } catch (err) {
+      results.push({ idx: i, parentCode: row.parentCode, parentRev: row.parentRev, childCode: row.childCode, childRev: row.childRev, ok: false, error: String(err && err.message ? err.message : err) });
+    }
+  });
+  if (toAppend.length) t.sheet.getRange(t.sheet.getLastRow() + 1, 1, toAppend.length, SHEET_HEADERS.BOM.length).setValues(toAppend);
+  rebuildBomReport_();
+  return { ok: true, results: results, snapshot: snapshot_() };
+}
+function delBOM_(p) {
+  var t = readBOM_();
+  var row = t.rows.filter(function (e) { return String(e.bom_id) === String(p.id); })[0];
+  if (!row) throw new Error('BOM 구성을 찾을 수 없습니다');
+  t.sheet.deleteRow(row._row);
+  rebuildBomReport_();
+  return { ok: true, snapshot: snapshot_() };
+}
+/* 현재 부모의 자식 엣지 스냅샷 (버전 충돌 감지용) — childKey:qty 정렬 join */
+function bomParentSnapshot_(edges) {
+  return edges.map(function (e) { return bomKey_(e.child_code, e.child_rev) + ':' + (Number(e.qty_per) || 0); }).sort().join(',');
+}
+/* 부모의 모든 엣지를 원자적으로 교체 (편집 경로). baseVersion으로 충돌 감지, 순환은 이 부모 엣지를 뺀 그래프 기준. */
+function setBOMParent_(user, p) {
+  var pc = String(p.parentCode || '').toUpperCase(), pr = String(p.parentRev || '').toUpperCase();
+  if (!pc) throw new Error('부모 품번이 필요합니다');
+  var items = readTable_('Items').rows;
+  if (!findItem_(items, pc, pr)) throw new Error('등록되지 않은 부모 품번/리비전: ' + skuText_(pc, pr));
+  var t = readBOM_();
+  var pKey = bomKey_(pc, pr);
+  var current = t.rows.filter(function (e) { return bomKey_(e.parent_code, e.parent_rev) === pKey; });
+  if (p.baseVersion !== undefined && p.baseVersion !== '') {
+    if (String(p.baseVersion) !== bomParentSnapshot_(current)) throw new Error('다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요');
+  }
+  var working = t.rows.filter(function (e) { return bomKey_(e.parent_code, e.parent_rev) !== pKey; });   // 이 부모 엣지 제외
+  var seen = {}, newEdges = [];
+  (p.children || []).forEach(function (ch) {
+    var cc = String(ch.childCode || '').toUpperCase(), cr = String(ch.childRev || '').toUpperCase();
+    var qty = Math.floor(Number(ch.qtyPer) || 0);
+    if (!cc) throw new Error('자식 품번을 입력하세요');
+    if (qty < 1) throw new Error('소요량은 1 이상의 정수여야 합니다: ' + skuText_(cc, cr));
+    if (!findItem_(items, cc, cr)) throw new Error('등록되지 않은 자식 품번/리비전: ' + skuText_(cc, cr));
+    var ck = bomKey_(cc, cr);
+    if (seen[ck]) throw new Error('중복 자식: ' + skuText_(cc, cr));
+    seen[ck] = true;
+    assertNoCycle_(working, pKey, ck);
+    var edge = { bom_id: uid_(), parent_code: pc, parent_rev: pr, child_code: cc, child_rev: cr, qty_per: qty, seq: Number(ch.seq) || 0, memo: ch.memo || '' };
+    working.push(edge);
+    newEdges.push(edge);
+  });
+  deleteLockRows_(t.sheet, current);   // 기존 부모 엣지 삭제 (아래→위 정렬삭제 재사용)
+  if (newEdges.length) {
+    var out = newEdges.map(function (e) { return [e.bom_id, e.parent_code, e.parent_rev, e.child_code, e.child_rev, e.qty_per, e.seq, e.memo]; });
+    t.sheet.getRange(t.sheet.getLastRow() + 1, 1, out.length, SHEET_HEADERS.BOM.length).setValues(out);
+  }
+  autoReleaseLock_(user, 'bom:' + pKey);
+  rebuildBomReport_();
+  return { ok: true, snapshot: snapshot_() };
+}
+
+/* ----- 조립 / 분해 (재고 연동, 원자적·전량검증) ----- */
+function appendHistoryRows_(rows) {
+  if (!rows.length) return;
+  var sh = sheet_('History');
+  sh.getRange(sh.getLastRow() + 1, 1, rows.length, SHEET_HEADERS.History.length).setValues(rows);   // N× appendRow 대신 1회 배치 (락 점유 단축)
+}
+/* 단계별 조립: 즉시 하위 구성품만 차감(qty_per×N), assy +N. 모든 자식 전량 검증 후에만 반영. */
+function assemble_(user, p) {
+  var N = Math.floor(Number(p.qty) || 0);
+  if (N < 1) throw new Error('수량은 1 이상이어야 합니다');
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  var itemsTable = readTable_('Items');
+  var assy = findItem_(itemsTable.rows, code, rev);
+  if (!assy) throw new Error('등록되지 않은 품번/리비전: ' + skuText_(code, rev));
+  var edges = childrenOf_(readBOM_().rows, code, rev);
+  if (!edges.length) throw new Error(skuText_(code, rev) + ' 은(는) 조립품(BOM 상위)이 아닙니다');
+
+  // 1) 전량 검증 (아무것도 쓰지 않음)
+  var plan = edges.map(function (e) {
+    var ci = findItem_(itemsTable.rows, e.child_code, e.child_rev);
+    if (!ci) throw new Error('구성품 미등록: ' + skuText_(e.child_code, e.child_rev));
+    var before = Number(ci.stock) || 0, need = (Number(e.qty_per) || 0) * N;
+    return { item: ci, need: need, before: before, after: before - need };
+  });
+  var short = plan.filter(function (x) { return x.after < 0; });
+  if (short.length) throw new Error('구성품 재고 부족: ' + short.map(function (x) { return skuText_(x.item.item_code, x.item.rev) + ' ' + x.before + '/' + x.need; }).join(', '));
+
+  // 2) 반영 (검증 통과 후)
+  var buildId = uid_(), ts = Date.now(), sku = skuText_(code, rev);
+  var assyBefore = Number(assy.stock) || 0, assyAfter = assyBefore + N;
+  var histRows = [[uid_(), ts, 'BUILD', assy.item_code, assy.rev || '', N, assyBefore, assyAfter, assy.location || '', '조립 #' + buildId, user.name]];
+  plan.forEach(function (x) {
+    itemsTable.sheet.getRange(x.item._row, 6).setValue(x.after);   // 자식 stock(6열)
+    x.item.stock = x.after;                                        // in-memory 갱신(저재고 판정용)
+    histRows.push([uid_(), ts, 'CONSUME', x.item.item_code, x.item.rev || '', x.need, x.before, x.after, x.item.location || '', '조립 소요 [' + sku + '] #' + buildId, user.name]);
+  });
+  itemsTable.sheet.getRange(assy._row, 6).setValue(assyAfter);      // assy stock
+  appendHistoryRows_(histRows);
+  plan.forEach(function (x) { notifyLowStockIfCrossed_(x.item, x.need); });   // 소비된 자식이 안전선 밑으로
+  rebuildReports_();
+  return { ok: true, buildId: buildId, after: assyAfter, snapshot: snapshot_() };
+}
+/* 분해: assy −N, 각 자식 +qty_per×N. assy 재고 검증 후 반영. */
+function disassemble_(user, p) {
+  var N = Math.floor(Number(p.qty) || 0);
+  if (N < 1) throw new Error('수량은 1 이상이어야 합니다');
+  var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
+  var itemsTable = readTable_('Items');
+  var assy = findItem_(itemsTable.rows, code, rev);
+  if (!assy) throw new Error('등록되지 않은 품번/리비전: ' + skuText_(code, rev));
+  var edges = childrenOf_(readBOM_().rows, code, rev);
+  if (!edges.length) throw new Error(skuText_(code, rev) + ' 은(는) 조립품(BOM 상위)이 아닙니다');
+  var assyBefore = Number(assy.stock) || 0;
+  if (assyBefore < N) throw new Error('조립품 재고 부족: 현재고 ' + assyBefore);
+
+  // 전량 검증 (자식 존재 확인) 후 반영
+  var plan = edges.map(function (e) {
+    var ci = findItem_(itemsTable.rows, e.child_code, e.child_rev);
+    if (!ci) throw new Error('구성품 미등록: ' + skuText_(e.child_code, e.child_rev));
+    var before = Number(ci.stock) || 0, add = (Number(e.qty_per) || 0) * N;
+    return { item: ci, add: add, before: before, after: before + add };
+  });
+  var buildId = uid_(), ts = Date.now(), sku = skuText_(code, rev);
+  var assyAfter = assyBefore - N;
+  var histRows = [[uid_(), ts, 'UNBUILD', assy.item_code, assy.rev || '', N, assyBefore, assyAfter, assy.location || '', '분해 #' + buildId, user.name]];
+  plan.forEach(function (x) {
+    itemsTable.sheet.getRange(x.item._row, 6).setValue(x.after);
+    x.item.stock = x.after;
+    histRows.push([uid_(), ts, 'RESTORE', x.item.item_code, x.item.rev || '', x.add, x.before, x.after, x.item.location || '', '분해 복원 [' + sku + '] #' + buildId, user.name]);
+  });
+  itemsTable.sheet.getRange(assy._row, 6).setValue(assyAfter);
+  assy.stock = assyAfter;              // in-memory 갱신(저재고 판정용)
+  appendHistoryRows_(histRows);
+  notifyLowStockIfCrossed_(assy, N);   // 분해로 assy 재고가 안전선 밑으로 내려갈 수 있음
+  rebuildReports_();
+  return { ok: true, after: assyAfter, snapshot: snapshot_() };
+}
+/* Report_BOM: 구조 전용(재고 없음). BOM/품목 변경 시에만 재작성 → IN/OUT/조립 hot-path와 분리.
+   재고가 필요하면 Looker에서 child_code+child_rev → Report_Stock 조인. */
+function rebuildBomReport_() {
+  var bom = readBOM_().rows;
+  var items = readTable_('Items').rows;
+  var itemMap = {}; items.forEach(function (i) { itemMap[bomKey_(i.item_code, i.rev)] = i; });
+  var sh = getOrCreate_('Report_BOM', ['parent_code', 'parent_rev', 'parent_name', 'parent_group', 'child_code', 'child_rev', 'child_name', 'child_group', 'qty_per', 'seq', 'memo']);
+  sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), 11).clearContent();
+  if (bom.length) {
+    var rows = bom.map(function (e) {
+      var pg = groupCodeOf_(e.parent_code), cg = groupCodeOf_(e.child_code);
+      var pi = itemMap[bomKey_(e.parent_code, e.parent_rev)] || {}, ci = itemMap[bomKey_(e.child_code, e.child_rev)] || {};
+      return [e.parent_code, e.parent_rev || '', pi.name || '', GROUP_NAMES[pg] || pg, e.child_code, e.child_rev || '', ci.name || '', GROUP_NAMES[cg] || cg, Number(e.qty_per) || 0, Number(e.seq) || 0, e.memo || ''];
+    });
+    sh.getRange(2, 1, rows.length, 11).setValues(rows);
+  }
 }
 
 /* ============ 개발 메모 / 개발로그 ============ */

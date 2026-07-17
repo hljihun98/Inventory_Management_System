@@ -97,6 +97,7 @@ function drawScanPanel(){
     <div class="row" style="margin-bottom:10px">
       <button class="btn btn-ghost btn-sm" id="goDocBtn">📁 문서/사진</button>
       <button class="btn btn-ghost btn-sm" id="goIssueBtn">🚨 이상신고</button>
+      ${isAssy(it.code,it.rev)?`<button class="btn btn-ghost btn-sm" id="goAssyBtn">🔧 조립/분해</button>`:''}
     </div>
     <div class="card">
       <div class="seg" style="margin-bottom:12px">
@@ -134,6 +135,7 @@ function drawScanPanel(){
   ['In','Out'].forEach(m=>{ $('#m'+m).onclick=()=>{ S.scanMode=m.toUpperCase(); drawScanPanel(); }; });
   $('#goDocBtn').onclick = ()=>{ S._docCode = it.code; S._docRev = it.rev||''; go('doc'); };
   $('#goIssueBtn').onclick = ()=>{ S._isCode = it.code; S._isRev = it.rev||''; S._issueTab = 'new'; go('issue'); };
+  { const b=$('#goAssyBtn'); if(b) b.onclick=()=>openAssyDetail(it.code, it.rev||''); }
   $('#qMinus').onclick=()=>{ const i=$('#qVal'); i.value=Math.max(1,Number(i.value)-1); };
   $('#qPlus').onclick =()=>{ const i=$('#qVal'); i.value=Number(i.value)+1; };
   const qr=$('#qReason'); if(qr) qr.oninput=()=>{ S._inReason=qr.value; };   // 재렌더에도 사유 보존
@@ -201,6 +203,88 @@ async function processTx(code, rev){
     toast(mode==='IN'?`입고 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})${stTag}`:`출고 −${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`,'ok');
     S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined; S._inPhotos=[]; S._inReason='';   // 상태 초기화
     renderAlerts(); drawScanPanel();
+  }catch(e){ toast(e.message,'err'); }
+}
+
+/* =========================================================
+   조립(assy) 상세 · BOM 트리 · 조립/분해
+========================================================= */
+/* 재귀 BOM 트리. mult = 이 노드 자식 소요량에 곱할 배수(루트 직계=조립수량, 그 아래는 null → 정보표시). */
+function renderBomTree(code, rev, mult, path){
+  path = path || new Set();
+  const key = bomKey(code, rev);
+  if(path.has(key) || path.size > 10) return '';        // 순환/깊이 가드
+  const kids = bomChildrenOf(code, rev);
+  if(!kids.length) return '';
+  const np = new Set(path); np.add(key);
+  return `<div class="bom-tree">${kids.map(e=>{
+    const ci = findItem(e.childCode, e.childRev);
+    const stock = itemQty(e.childCode, e.childRev);
+    const per = Number(e.qtyPer)||0;
+    const childAssy = isAssy(e.childCode, e.childRev);
+    const openKey = key + '>' + bomKey(e.childCode, e.childRev);
+    const open = S._treeOpen && S._treeOpen.has(openKey);
+    const need = (mult!=null) ? per*mult : null;
+    const short = (need!=null) && stock < need;
+    return `<div class="bom-row" style="padding:5px 0;border-top:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        ${childAssy?`<button class="bom-caret" data-tree="${esc(openKey)}" style="width:20px">${open?'▾':'▸'}</button>`:'<span style="width:20px;display:inline-block"></span>'}
+        <span class="ln" style="font-family:var(--mono)">${esc(skuOf(e.childCode,e.childRev))}</span>
+        ${childAssy?'<span class="chip chip-move">🔧</span>':''}
+        <span class="muted">${esc(ci?.name||(ci?'':'미등록'))}</span>
+        <span class="chip chip-gray">×${fmt(per)}</span>
+        <span style="margin-left:auto;font-variant-numeric:tabular-nums${short?';color:var(--out);font-weight:700':''}">재고 ${fmt(stock)}${need!=null?` / 소요 ${fmt(need)}`:''}${short?' ⚠️':''}</span>
+      </div>
+      ${childAssy&&open?`<div style="margin-left:20px">${renderBomTree(e.childCode, e.childRev, null, np)}</div>`:''}
+    </div>`;
+  }).join('')}</div>`;
+}
+function openAssyDetail(code, rev){
+  S._assyView = { code, rev: rev||'' };
+  S._assyQty = S._assyQty || 1;
+  S._treeOpen = S._treeOpen || new Set();
+  openModal('');
+  drawAssyModal();
+}
+function drawAssyModal(){
+  const { code, rev } = S._assyView;
+  const it = findItem(code, rev);
+  if(!it){ closeModal(); return toast('품번을 찾을 수 없습니다','err'); }
+  const N = Math.max(1, Number(S._assyQty)||1);
+  const buildable = buildableOf(code, rev);
+  $('#modalBox').innerHTML = `
+    <h3>🔧 조립 · <span style="font-family:var(--mono)">${esc(skuOf(code,rev))}</span></h3>
+    <div class="lot-meta" style="margin-bottom:10px">${esc(it.name||'')} · 현재고 <b>${fmt(it.stock)}${esc(it.unit||'')}</b> · 조립가능 <b>${fmt(buildable)}</b></div>
+    <div class="field"><label>조립/분해 수량</label>
+      <div class="big-qty"><button id="aMinus">−</button><input id="aQty" type="number" min="1" value="${N}" inputmode="numeric"><button id="aPlus">+</button></div></div>
+    <div style="font-size:13px;font-weight:600;margin:12px 0 2px">구성품 <span class="muted">(조립 ${N}개 기준 소요)</span></div>
+    ${renderBomTree(code, rev, N)}
+    <div class="row" style="margin-top:14px">
+      <button class="btn btn-out" id="aDisassemble" style="flex:1">분해</button>
+      <button class="btn btn-in" id="aAssemble" style="flex:1">조립</button>
+    </div>`;
+  $('#aMinus').onclick=()=>{ S._assyQty=Math.max(1,N-1); drawAssyModal(); };
+  $('#aPlus').onclick =()=>{ S._assyQty=N+1; drawAssyModal(); };
+  $('#aQty').onchange =()=>{ S._assyQty=Math.max(1,Number($('#aQty').value)||1); drawAssyModal(); };
+  document.querySelectorAll('[data-tree]').forEach(b=>b.onclick=()=>{ const k=b.dataset.tree; S._treeOpen.has(k)?S._treeOpen.delete(k):S._treeOpen.add(k); drawAssyModal(); });
+  $('#aAssemble').onclick=()=>busy($('#aAssemble'), ()=>doAssemble(code, rev));
+  $('#aDisassemble').onclick=()=>busy($('#aDisassemble'), ()=>doDisassemble(code, rev));
+}
+async function doAssemble(code, rev){
+  const qty = Math.max(1, Number($('#aQty').value)||1);
+  try{
+    const r = await api('assemble', { code, rev, qty });   // 스냅샷 자동 반영 → S.items/S.bom 갱신
+    toast(`조립 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`,'ok');
+    renderCurrent(); drawAssyModal();
+  }catch(e){ toast(e.message,'err'); }
+}
+async function doDisassemble(code, rev){
+  const qty = Math.max(1, Number($('#aQty').value)||1);
+  if(!confirm(`${skuOf(code,rev)} ${qty}개를 분해할까요? (조립품 재고 ↓ · 구성품 복원 ↑)`)) return;
+  try{
+    const r = await api('disassemble', { code, rev, qty });
+    toast(`분해 ${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`,'ok');
+    renderCurrent(); drawAssyModal();
   }catch(e){ toast(e.message,'err'); }
 }
 
@@ -346,10 +430,10 @@ function renderAdmin(){
   const seg = (id,label)=>`<button data-adm="${id}" class="${t===id?'on-move':''}">${label}</button>`;
   $('#main').innerHTML = `
     <div class="sec-title">⚙️ 관리</div>
-    <div class="seg seg-compact" style="margin-bottom:12px">${seg('users','사용자')}${seg('items','품번')}${seg('locs','위치')}${seg('notify','알림')}${seg('devlog','메모')}${seg('data','데이터')}</div>
+    <div class="seg seg-compact" style="margin-bottom:12px">${seg('users','사용자')}${seg('items','품번')}${seg('bom','BOM')}${seg('locs','위치')}${seg('notify','알림')}${seg('devlog','메모')}${seg('data','데이터')}</div>
     <div id="admBody"></div>`;
   document.querySelectorAll('[data-adm]').forEach(b=>b.onclick=()=>{ S._admTab=b.dataset.adm; renderAdmin(); });
-  ({users:admUsers, items:admItems, locs:admLocs, notify:admNotify, devlog:admDevLog, data:admData})[t]();
+  ({users:admUsers, items:admItems, bom:admBOM, locs:admLocs, notify:admNotify, devlog:admDevLog, data:admData})[t]();
 }
 function admUsers(){
   $('#admBody').innerHTML = `
@@ -396,7 +480,8 @@ function admItems(){
       ${S.items.map(i=>`<tr><td style="font-family:var(--mono)">${esc(i.code)}</td><td style="font-family:var(--mono)">${esc(i.rev||'-')}</td>
         <td><span class="chip chip-gray">${esc(groupNameOf(i.code))}</span></td><td>${esc(i.name)}</td>
         <td>${esc(i.unit)}</td><td>${fmt(i.safetyStock)}</td><td>${fmt(i.stock)}</td>
-        <td style="text-align:right"><button class="btn btn-danger btn-sm" data-del-item="${esc(i.code)}" data-del-rev="${esc(i.rev||'')}">삭제</button></td></tr>`).join('')}
+        <td style="text-align:right;white-space:nowrap"><button class="btn btn-ghost btn-sm" data-edit-item="${esc(i.code)}" data-edit-rev="${esc(i.rev||'')}">수정</button>
+        <button class="btn btn-danger btn-sm" data-del-item="${esc(i.code)}" data-del-rev="${esc(i.rev||'')}">삭제</button></td></tr>`).join('')}
     </tbody></table></div>
     <div class="card"><b style="font-size:14px">품번 추가</b>
       <div class="row" style="margin-top:10px">
@@ -435,10 +520,172 @@ function admItems(){
       if(okN) setTimeout(admItems, 900);   // 목록 새로고침 (결과 토스트를 잠깐 보여준 뒤)
     }catch(e){ toast(e.message,'err'); }
   });
+  document.querySelectorAll('[data-edit-item]').forEach(b=>b.onclick=async ()=>{
+    const code=b.dataset.editItem, rev=b.dataset.editRev||'';
+    const it = findItem(code, rev);
+    if(!it) return toast('대상을 찾을 수 없습니다','err');
+    const holder = await lockAcquire('item:'+code+'|'+rev);      // 편집 잠금 확보 (다른 사람이 수정 중이면 차단)
+    if(holder) return toast(`${holder.name}님이 수정 중입니다 (${agoText(holder.ageSec)})`,'err');
+    S._lockModal = true;                                          // 모달을 닫으면 잠금 해제되도록 표시
+    const baseVersion = [it.name, it.unit||'EA', Number(it.safetyStock)||0].join('|');   // 버전 충돌 감지용 (editItem_과 동일 규칙)
+    openModal(`<h3>품번 수정 · <span style="font-family:var(--mono)">${esc(skuOf(code,rev))}</span></h3>
+      <div class="field"><label>품명</label><input id="eiName" value="${esc(it.name||'')}"></div>
+      <div class="row">
+        <div class="field"><label>단위</label><input id="eiUnit" value="${esc(it.unit||'EA')}"></div>
+        <div class="field"><label>안전재고</label><input id="eiSafe" type="number" min="0" value="${esc(String(it.safetyStock||0))}"></div>
+      </div>
+      <p class="muted" style="font-size:12px;margin-top:4px">재고 수량·보관위치는 여기서 바꿀 수 없습니다 (스캔 입·출고로만 변동).</p>
+      <div class="row" style="margin-top:12px"><button class="btn btn-ghost" id="eiCancel" style="flex:1">취소</button><button class="btn btn-primary" id="eiSave" style="flex:1">저장</button></div>`);
+    ['eiName','eiUnit','eiSafe'].forEach(id=>$('#'+id)?.addEventListener('input', lockTouch));   // 타이핑 중 잠금 유지
+    $('#eiCancel').onclick = ()=>closeModal();                    // closeModal이 잠금 해제까지 처리
+    $('#eiSave').onclick = ()=>busy($('#eiSave'), async ()=>{
+      const name=$('#eiName').value.trim();
+      if(!name) return toast('품명을 입력하세요','err');
+      try{
+        await api('editItem', { code, rev, name, unit:$('#eiUnit').value.trim()||'EA', safetyStock:Number($('#eiSafe').value)||0, baseVersion });
+        toast('수정 완료','ok'); closeModal(); admItems();        // editItem_이 서버 잠금을 자동 해제, closeModal이 클라 상태 정리
+      }catch(e){ toast(e.message,'err'); }
+    });
+  });
   document.querySelectorAll('[data-del-item]').forEach(b=>b.onclick=async ()=>{
     const code=b.dataset.delItem, rev=b.dataset.delRev||'';
     if(!confirm(`품번 ${skuOf(code,rev)} 를 삭제할까요?`)) return;
     try{ await api('delItem', { code, rev }); toast('삭제 완료','ok'); admItems(); }catch(e){ toast(e.message,'err'); }
+  });
+}
+
+/* =========================================================
+   관리 › BOM (조립 구조)
+========================================================= */
+/* S.bom 을 부모별로 묶는다 */
+function bomParents(){
+  const map = {};
+  S.bom.forEach(e=>{ const k=bomKey(e.parentCode,e.parentRev); (map[k]=map[k]||{code:e.parentCode,rev:e.parentRev||'',edges:[]}).edges.push(e); });
+  return Object.values(map).sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev)));
+}
+function admBOM(){
+  const parents = bomParents();
+  $('#admBody').innerHTML = `
+    <div class="card" style="font-size:12.5px;color:var(--t2)">BOM은 <b>부모→자식 소요량</b>으로 조립 구조를 정의합니다. 부모·자식 모두 <b>이미 등록된 품번</b>이어야 하며, 재고는 <b>조립/분해</b>로만 연동됩니다(여기선 구조만 편집). BOM에 자식이 있는 품번이 자동으로 <b>조립품</b>이 됩니다.</div>
+    <div class="card">
+      <b style="font-size:14px">조립품 목록 <span class="muted">(${parents.length})</span></b>
+      ${parents.length? parents.map(p=>{
+        const buildable = buildableOf(p.code, p.rev), it = findItem(p.code,p.rev);
+        return `<div style="border-top:1px solid var(--line);padding:8px 0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <b style="font-family:var(--mono)">${esc(skuOf(p.code,p.rev))}</b>
+            <span class="muted">${esc(it?.name||'(미등록 품번)')}</span>
+            <span class="chip chip-gray">구성 ${p.edges.length}</span>
+            <span class="chip ${buildable>0?'chip-in':'chip-out'}">조립가능 ${fmt(buildable)}</span>
+            <button class="btn btn-ghost btn-sm" style="margin-left:auto" data-bom-edit="${esc(p.code)}" data-bom-rev="${esc(p.rev||'')}">수정</button>
+          </div>
+          <div style="margin-top:4px">${p.edges.slice().sort((a,b)=>(a.seq||0)-(b.seq||0)).map(e=>`
+            <div class="lot-line"><span class="ln" style="font-family:var(--mono)">${esc(skuOf(e.childCode,e.childRev))}</span>
+              <span class="muted">${esc(findItem(e.childCode,e.childRev)?.name||'')}${isAssy(e.childCode,e.childRev)?' 🔧':''}</span>
+              <span class="q">×${fmt(e.qtyPer)}</span>
+              <button class="btn btn-danger btn-sm" style="margin-left:8px" data-bom-del="${esc(e.id)}">삭제</button></div>`).join('')}</div>
+        </div>`;
+      }).join('') : '<div class="empty" style="margin-top:8px"><b>등록된 BOM이 없습니다</b>아래에서 붙여넣기로 등록하세요.</div>'}
+    </div>
+    <div class="card"><b style="font-size:14px">📥 BOM 일괄 붙여넣기</b>
+      <p class="muted" style="margin:6px 0 10px">엑셀/시트에서 <b>부모품번 · 부모Rev · 자식품번 · 자식Rev · 소요량</b> 순서(탭 구분)로 복사해 붙여넣으세요. 한 줄에 한 구성. 품번 칸에 <b style="font-family:var(--mono)">RP-303-013 (D)</b> 처럼 넣으면 리비전이 자동 분리됩니다.</p>
+      <textarea id="bomText" rows="5" placeholder="RP-300-000&#9;A&#9;RP-303-013&#9;D&#9;2&#10;RP-300-000&#9;A&#9;RG-101-002&#9;A&#9;4" style="width:100%;padding:10px;border:1.5px solid var(--bd);border-radius:9px;font-family:var(--mono);font-size:13px;white-space:pre;overflow-x:auto"></textarea>
+      <button class="btn btn-primary" id="bomBulkAdd" style="width:100%;margin-top:10px">붙여넣은 BOM 일괄 등록</button>
+      <div id="bomResult"></div></div>
+    <div class="card"><b style="font-size:14px">구성 1건 추가</b>
+      <div class="row" style="margin-top:10px">
+        <div class="field" style="flex:2"><label>부모 품번</label><input id="b1pc" placeholder="RP-300-000" style="text-transform:uppercase"></div>
+        <div class="field"><label>부모 Rev</label><input id="b1pr" style="text-transform:uppercase"></div></div>
+      <div class="row">
+        <div class="field" style="flex:2"><label>자식 품번</label><input id="b1cc" placeholder="RP-303-013" style="text-transform:uppercase"></div>
+        <div class="field"><label>자식 Rev</label><input id="b1cr" style="text-transform:uppercase"></div>
+        <div class="field"><label>소요량</label><input id="b1q" type="number" min="1" value="1"></div></div>
+      <button class="btn btn-primary" id="b1add">추가</button></div>`;
+  document.querySelectorAll('[data-bom-del]').forEach(b=>b.onclick=async ()=>{
+    if(!confirm('이 구성을 삭제할까요?')) return;
+    try{ await api('delBOM', { id:b.dataset.bomDel }); toast('삭제 완료','ok'); admBOM(); }catch(e){ toast(e.message,'err'); }
+  });
+  document.querySelectorAll('[data-bom-edit]').forEach(b=>b.onclick=()=>openBomEdit(b.dataset.bomEdit, b.dataset.bomRev||''));
+  $('#bomBulkAdd').onclick = ()=>busy($('#bomBulkAdd'), async ()=>{
+    const rows = ($('#bomText').value||'').replace(/\r/g,'').split('\n').map(l=>l.split('\t').map(c=>c.trim())).filter(c=>c.join('')!=='')
+      .map(c=>{
+        let pc=c[0]||'', pr=c[1]||'', cc=c[2]||'', cr=c[3]||'', q=c[4]||'';
+        const pp=parseScan(pc); if(pp.rev){ pc=pp.code; if(!pr) pr=pp.rev; }   // "(D)" 인라인 리비전 분리(칸 이동 없음)
+        const cp=parseScan(cc); if(cp.rev){ cc=cp.code; if(!cr) cr=cp.rev; }
+        return { parentCode:pc, parentRev:pr, childCode:cc, childRev:cr, qtyPer:Number(q)||0 };
+      });
+    if(!rows.length) return toast('붙여넣은 BOM이 없습니다','err');
+    try{
+      const r = await api('bulkAddBOM', { rows });
+      const okN = r.results.filter(x=>x.ok).length, fails = r.results.filter(x=>!x.ok);
+      toast(`BOM ${okN}건 등록${fails.length?` · ${fails.length}건 실패`:''}`, fails.length?'err':'ok');
+      $('#bomResult').innerHTML = fails.length
+        ? `<div style="margin-top:10px;font-size:12.5px;color:var(--out)"><b>실패 ${fails.length}건</b>${fails.map(x=>`<div>· ${esc(skuOf(x.parentCode||'',x.parentRev||''))} → ${esc(skuOf(x.childCode||'',x.childRev||''))} — ${esc(x.error)}</div>`).join('')}</div>`
+        : '';
+      if(okN) setTimeout(admBOM, 900);
+    }catch(e){ toast(e.message,'err'); }
+  });
+  $('#b1add').onclick = ()=>busy($('#b1add'), async ()=>{
+    try{
+      await api('addBOM', { parentCode:$('#b1pc').value.trim(), parentRev:$('#b1pr').value.trim(), childCode:$('#b1cc').value.trim(), childRev:$('#b1cr').value.trim(), qtyPer:Number($('#b1q').value)||0 });
+      toast('구성 추가 완료','ok'); admBOM();
+    }catch(e){ toast(e.message,'err'); }
+  });
+}
+/* 부모 단위 BOM 편집 (soft-lock + 버전 충돌) — setBOMParent 로 전체 교체 */
+async function openBomEdit(code, rev){
+  const holder = await lockAcquire('bom:'+bomKey(code,rev));
+  if(holder) return toast(`${holder.name}님이 수정 중입니다 (${agoText(holder.ageSec)})`,'err');
+  S._lockModal = true;
+  const edges = bomChildrenOf(code, rev);
+  const baseVersion = edges.map(e=>bomKey(e.childCode,e.childRev)+':'+(Number(e.qtyPer)||0)).sort().join(',');   // setBOMParent_ 와 동일 규칙
+  S._bomEdit = { code, rev:rev||'', baseVersion, rows: edges.map(e=>({ childCode:e.childCode, childRev:e.childRev||'', qtyPer:Number(e.qtyPer)||0 })) };
+  if(!S._bomEdit.rows.length) S._bomEdit.rows=[{childCode:'',childRev:'',qtyPer:1}];
+  openModal('');
+  drawBomEdit();
+}
+function bomEditRow(r,i){
+  const cell='padding:6px 8px;border:1.5px solid var(--bd);border-radius:7px;background:var(--sf)';
+  return `<tr data-berow="${i}">
+    <td><input data-bef="childCode" value="${esc(r.childCode)}" placeholder="품번" style="width:100%;font-family:var(--mono);text-transform:uppercase;${cell}"></td>
+    <td><input data-bef="childRev" value="${esc(r.childRev)}" placeholder="Rev" style="width:100%;text-align:center;text-transform:uppercase;font-family:var(--mono);${cell}"></td>
+    <td><input data-bef="qtyPer" value="${esc(String(r.qtyPer))}" type="number" min="1" style="width:100%;text-align:right;${cell}"></td>
+    <td style="text-align:center"><button data-bedel="${i}" style="color:var(--t3);font-size:15px">✕</button></td></tr>`;
+}
+function drawBomEdit(){
+  const { code, rev, rows } = S._bomEdit;
+  $('#modalBox').innerHTML = `
+    <h3>BOM 수정 · <span style="font-family:var(--mono)">${esc(skuOf(code,rev))}</span></h3>
+    <p class="muted" style="font-size:12px">자식 구성품과 소요량을 편집합니다. 저장하면 이 부모의 BOM 전체가 교체됩니다.</p>
+    <div style="overflow-x:auto"><table class="table"><thead><tr><th>자식 품번</th><th style="width:56px">Rev</th><th style="width:72px">소요량</th><th style="width:28px"></th></tr></thead>
+    <tbody id="bomEditBody">${rows.map(bomEditRow).join('')}</tbody></table></div>
+    <button class="btn btn-ghost btn-sm" id="bomAddRow" style="margin-top:8px">＋ 자식 추가</button>
+    <div class="row" style="margin-top:12px"><button class="btn btn-ghost" id="bomCancel" style="flex:1">취소</button><button class="btn btn-primary" id="bomSave" style="flex:1">저장</button></div>`;
+  bindBomEdit();
+}
+function bindBomEdit(){
+  document.querySelectorAll('#bomEditBody [data-bef]').forEach(el=>{
+    const i=Number(el.closest('[data-berow]').dataset.berow), f=el.dataset.bef;
+    el.addEventListener('input', ()=>{ S._bomEdit.rows[i][f]=el.value; lockTouch(); });   // 재렌더 없이 상태만(포커스 보존)
+  });
+  document.querySelectorAll('#bomEditBody [data-bedel]').forEach(b=>b.onclick=()=>{
+    S._bomEdit.rows.splice(Number(b.dataset.bedel),1);
+    if(!S._bomEdit.rows.length) S._bomEdit.rows=[{childCode:'',childRev:'',qtyPer:1}];
+    drawBomEdit();
+  });
+  $('#bomAddRow').onclick=()=>{ S._bomEdit.rows.push({childCode:'',childRev:'',qtyPer:1}); drawBomEdit(); };
+  $('#bomCancel').onclick=()=>closeModal();   // closeModal 이 잠금 해제 처리
+  $('#bomSave').onclick=()=>busy($('#bomSave'), async ()=>{
+    const { code, rev, baseVersion, rows } = S._bomEdit;
+    const children = rows.map(r=>{
+      const ps=parseScan(r.childCode); let cc=ps.code, cr=String(r.childRev||'').trim().toUpperCase();
+      if(ps.rev && !cr) cr=ps.rev;
+      return { childCode:cc, childRev:cr, qtyPer:Number(r.qtyPer)||0 };
+    }).filter(r=>r.childCode);
+    try{
+      await api('setBOMParent', { parentCode:code, parentRev:rev, children, baseVersion });
+      toast('BOM 저장 완료','ok'); closeModal(); admBOM();   // setBOMParent_ 가 서버 잠금 자동 해제
+    }catch(e){ toast(e.message,'err'); }
   });
 }
 function admLocs(){

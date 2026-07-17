@@ -6,13 +6,13 @@
 
 /* ▼▼▼ 배포 시 이 값을 본인의 Apps Script 웹앱 URL로 바꾸면
        로그인 화면에서 주소 입력 없이 바로 사용할 수 있습니다. ▼▼▼ */
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwVVsBIH-uCV_5thk6A9-AziHKwj85pBnbhbbS_0ktleTqDqCqGCvcqt-2UXRXBkpcw/exec';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbynbfljY52UlLbB_DnIfj90iD-sHyphkiL9QoY5VHsdwZnlCbngF5ZtP4L6VgGKtTse/exec';
 /* 예: const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycb.../exec'; */
 
 /* ---------- 전역 상태 ---------- */
 const S = {
   api:'', auth:null, me:null,
-  users:[], items:[], locs:[], hist:[], histTotal:0, openIssueCount:0,
+  users:[], items:[], locs:[], hist:[], histTotal:0, openIssueCount:0, bom:[],
   tab:'scan',
   scanTarget:null, scanMode:'IN',
   scanner:null, scanning:false,
@@ -100,6 +100,7 @@ function applySnapshot(d){
   S.users = d.users||[]; S.items = d.items||[];
   S.locs = d.locs||[]; S.hist = d.hist||[]; S.histTotal = d.histTotal ?? (d.hist||[]).length;
   S.openIssueCount = d.openIssueCount ?? S.openIssueCount ?? 0;
+  S.bom = d.bom||[];
 }
 async function loadAll(){ try{ await api('all'); S.loaded=true; }catch(e){ toast(e.message,'err'); } }
 
@@ -110,12 +111,65 @@ async function busy(btn, fn){
   try{ await fn(); } finally{ if(document.body.contains(btn)){ btn.disabled=false; btn.textContent=t; } }
 }
 
+/* ---------- 편집 중 소프트 락 (수정 충돌 방지) ----------
+   한 번에 하나의 레코드만 편집한다는 가정. 편집 진입 시 lockAcquire, 저장/취소/탭이동/로그아웃 시 lockRelease.
+   TTL(서버 3분)이 있어 브라우저를 그냥 닫아도 잠금은 자동 해제된다. */
+const LOCK = { resource:null, timer:null, lastActive:0 };
+const LOCK_IDLE_MS = 120000;   // 이 시간 이상 사용자 조작이 없으면 하트비트 중단 → 서버 TTL(3분)로 자동 해제
+/* 잠금 획득 시도 → 성공하면 null, 다른 사람이 점유 중이면 보유자 정보 반환.
+   force=true 이면 강제로 이어받는다(관리자만 · 서버에서도 재검증). */
+async function lockAcquire(resource, force){
+  const r = await api('acquireLock', { resource, force:!!force }, {noApply:true});
+  if(!r.acquired) return r.holder;                       // 다른 사람이 편집 중
+  if(LOCK.resource && LOCK.resource!==resource) await lockRelease();   // 이전 잠금 정리
+  LOCK.resource = resource; LOCK.lastActive = Date.now();
+  clearInterval(LOCK.timer);
+  LOCK.timer = setInterval(async ()=>{
+    if(Date.now() - LOCK.lastActive > LOCK_IDLE_MS){ lockRelease(); return; }   // 방치된 편집 → 잠금 놓아줌
+    try{
+      const rr = await api('renewLock', { resource }, {noApply:true});          // 있을 때만 갱신(재생성 안 함)
+      if(!rr.renewed){ clearInterval(LOCK.timer); LOCK.timer=null; LOCK.resource=null; }  // 만료/이어받기됨
+    }catch(e){}
+  }, 60000);
+  return null;
+}
+async function lockRelease(){
+  if(!LOCK.resource) return;
+  const resource = LOCK.resource;
+  LOCK.resource = null; clearInterval(LOCK.timer); LOCK.timer = null;
+  try{ await api('releaseLock', { resource }, {noApply:true}); }catch(e){}
+}
+/* 사용자가 편집을 이어가는 중임을 표시 (하트비트가 계속 갱신하도록 활동 시각 갱신) */
+function lockTouch(){ if(LOCK.resource) LOCK.lastActive = Date.now(); }
+
 /* ---------- 조회 헬퍼 (품번+리비전 기반) ---------- */
 const itemOf = code => S.items.find(i=>i.code===code);                          // 품번으로 첫 항목(느슨한 조회·표시용)
 const findItem = (code, rev) => S.items.find(i=>i.code===code && String(i.rev||'')===String(rev||''));  // 정확 매칭
 const locOf  = code => S.locs.find(l=>l.code===code);
 function itemQty(code, rev){ return Number(findItem(code,rev)?.stock||0); }      // 재고는 (품번+리비전) 행에 직접 저장
 function lowStockItems(){ return S.items.filter(i=>i.safetyStock>0 && Number(i.stock||0) < i.safetyStock); }
+
+/* ---------- BOM / 조립(assy) 헬퍼 (백엔드와 동일 규칙) ----------
+   assy = BOM에 자식이 있는 품번(플래그 없음). 식별키 = 품번|리비전(대문자). */
+const bomKey = (c,r) => `${String(c||'').toUpperCase()}|${String(r||'').toUpperCase()}`;
+function bomChildrenOf(code, rev){
+  const k = bomKey(code,rev);
+  return S.bom.filter(e=>bomKey(e.parentCode,e.parentRev)===k).slice().sort((a,b)=>(a.seq||0)-(b.seq||0));
+}
+function bomParentsOf(code, rev){
+  const k = bomKey(code,rev);
+  return S.bom.filter(e=>bomKey(e.childCode,e.childRev)===k);
+}
+const isAssy = (code, rev) => S.bom.some(e=>bomKey(e.parentCode,e.parentRev)===bomKey(code,rev));
+/* 조립 가능 수량 = min over children floor(자식재고/소요량). 자식 없으면 null. */
+function buildableOf(code, rev){
+  const kids = bomChildrenOf(code,rev);
+  if(!kids.length) return null;
+  return kids.reduce((min,e)=>{
+    const have = itemQty(e.childCode, e.childRev), per = Number(e.qtyPer)||0;
+    return Math.min(min, per>0 ? Math.floor(have/per) : 0);
+  }, Infinity);
+}
 
 /* ---------- 로그인 ---------- */
 async function doLogin(){
@@ -142,6 +196,7 @@ async function doLogin(){
 }
 function doLogout(){
   stopScan();
+  lockRelease();
   S.me = null; S.auth = null; S.loaded = false;
   $('#appView').classList.add('hidden');
   $('#loginView').classList.remove('hidden');
@@ -183,6 +238,7 @@ function openMoreSheet(){
 }
 async function go(tab){
   if(S.tab==='scan' && tab!=='scan') stopScan();
+  if(LOCK.resource) lockRelease();          // 다른 탭으로 이동하면 편집 잠금 해제
   S.tab = tab; buildTabs();
   if(!S.loaded){                          // 시트 전체 로드는 최초 1회만 (이후엔 메모리 상태로 즉시 렌더)
     $('#main').innerHTML = '<div class="empty">시트에서 데이터를 불러오는 중…</div>';
@@ -214,7 +270,7 @@ function renderAlerts(){
 
 /* ---------- 모달 (더보기 시트 등에서 사용) ---------- */
 function openModal(html){ $('#modalBox').innerHTML = html; $('#overlay').classList.remove('hidden'); }
-function closeModal(){ $('#overlay').classList.add('hidden'); $('#modalBox').innerHTML=''; }
+function closeModal(){ $('#overlay').classList.add('hidden'); $('#modalBox').innerHTML=''; if(S._lockModal){ S._lockModal=false; lockRelease(); } }   // 편집 모달을 닫으면 잠금 해제 (바깥 클릭 포함)
 document.addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
 
 /* =========================================================
@@ -262,15 +318,18 @@ function renderInv(){
   $('#invQ').oninput = e=>{ S._invQ = e.target.value; renderInv(); const v=$('#invQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
   document.querySelectorAll('[data-grp]').forEach(b=>b.onclick=()=>{ S._invGroup=b.dataset.grp; renderInv(); });
   document.querySelectorAll('[data-gtoggle]').forEach(b=>b.onclick=()=>{ const g=b.dataset.gtoggle; S._invCollapsed.has(g)?S._invCollapsed.delete(g):S._invCollapsed.add(g); renderInv(); });
+  document.querySelectorAll('[data-assy]').forEach(el=>el.onclick=()=>openAssyDetail(el.dataset.assy, el.dataset.assyRev||''));   // 조립품 카드 → 상세/조립
 }
 function invCard(it){
   const qty = Number(it.stock||0);
   const low = it.safetyStock>0 && qty < it.safetyStock;
   const pct = it.safetyStock>0 ? Math.min(100, qty/it.safetyStock*100) : 100;
+  const assy = isAssy(it.code, it.rev);
+  const buildable = assy ? buildableOf(it.code, it.rev) : null;
   return `<div class="item-card">
-    <div class="item-head" style="cursor:default">
-      <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
-        <div class="cd">${esc(skuOf(it.code,it.rev))} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}${it.location?' · 📍'+esc(it.location):''}</div></div>
+    <div class="item-head" ${assy?`data-assy="${esc(it.code)}" data-assy-rev="${esc(it.rev||'')}" style="cursor:pointer"`:'style="cursor:default"'}>
+      <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
+        <div class="cd">${esc(skuOf(it.code,it.rev))} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}${it.location?' · 📍'+esc(it.location):''}${assy?` · 조립가능 ${fmt(buildable)}${esc(it.unit)}`:''}</div></div>
       <div class="qty"><b>${fmt(qty)}</b> <span>${esc(it.unit)}</span></div>
     </div>
     ${it.safetyStock>0?`<div style="padding:0 14px 12px"><div class="bar-safety ${low?'low':''}"><i style="width:${pct}%"></i></div></div>`:''}
@@ -317,7 +376,11 @@ function renderLoc(){
 /* =========================================================
    이력
 ========================================================= */
-const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', CREATE:'생성' };
+const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', CREATE:'생성', BUILD:'조립', CONSUME:'조립소요', UNBUILD:'분해', RESTORE:'분해복원' };
+const HIST_POS = ['IN','BUILD','RESTORE'];   // + 부호(재고 증가)
+const HIST_NEG = ['OUT','CONSUME','UNBUILD']; // − 부호(재고 감소)
+const histHasBA = t => HIST_POS.includes(t) || HIST_NEG.includes(t);           // before→after 있는 유형
+const histChipCls = t => HIST_POS.includes(t)?'in':HIST_NEG.includes(t)?'out':t==='MOVE'?'move':'gray';
 function renderHist(){
   const f = S.histFilter;
   const q = (S._histQ||'').toLowerCase();
@@ -328,17 +391,17 @@ function renderHist(){
   $('#main').innerHTML = `
     <div class="sec-title">🧾 입·출고 이력 <small>전수 ${fmt(S.histTotal)}건 (최근 500건 표시 · 전체는 구글시트 History 탭)</small></div>
     <div class="searchbar"><input id="histQ" placeholder="품번/품명/담당자 검색" value="${esc(S._histQ||'')}">
-      <select id="histF">${['ALL','IN','OUT'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select></div>
+      <select id="histF">${['ALL','IN','OUT','BUILD','CONSUME','UNBUILD','RESTORE'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select></div>
     <div class="card">${rows.length?rows.map(h=>`
       <div class="hist-line">
         <div class="when">${new Date(h.ts).toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'})}<br>${new Date(h.ts).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</div>
         <div class="what">
-          <span class="chip chip-${h.type==='IN'?'in':h.type==='OUT'?'out':h.type==='MOVE'?'move':'gray'}">${TYPE_KO[h.type]||h.type}</span>
+          <span class="chip chip-${histChipCls(h.type)}">${TYPE_KO[h.type]||h.type}</span>
           <span class="ln">${esc(skuOf(h.itemCode,h.rev))}</span>
           <div class="muted">${esc(findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'')} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
-          ${h.type==='IN'||h.type==='OUT'?` · 재고 ${fmt(h.before)}→${fmt(h.after)}`:''}</div>
+          ${histHasBA(h.type)?` · 재고 ${fmt(h.before)}→${fmt(h.after)}`:''}</div>
         </div>
-        ${h.type==='IN'?`<div class="q in">+${fmt(h.qty)}</div>`:h.type==='OUT'?`<div class="q out">−${fmt(h.qty)}</div>`:''}
+        ${HIST_POS.includes(h.type)?`<div class="q in">+${fmt(h.qty)}</div>`:HIST_NEG.includes(h.type)?`<div class="q out">−${fmt(h.qty)}</div>`:''}
       </div>`).join(''):'<div class="empty"><b>이력이 없습니다</b>입·출고를 처리하면 여기에 기록됩니다.</div>'}
     </div>`;
   $('#histF').onchange = e=>{ S.histFilter = e.target.value; renderHist(); };
