@@ -122,15 +122,68 @@ function doGet(e) {
   return out_({ ok: true, service: 'LOT-IMS API', time: new Date().toISOString() });
 }
 function doPost(e) {
+  var req = null;
   try {
-    var req = JSON.parse(e.postData.contents);
+    req = JSON.parse(e.postData.contents);
     return out_(handle_(req));
   } catch (err) {
-    return out_({ ok: false, error: String(err && err.message ? err.message : err) });
+    var msg = String(err && err.message ? err.message : err);
+    var code = classifyError_(msg);
+    var resp = { ok: false, code: code, error: msg };
+    if (code === 'E9000') {                       // 미분류 = 예기치 못한 오류 → 추적용 참조번호 + 로깅
+      var ref = uid_();
+      resp.ref = ref;
+      resp.error = '서버 처리 중 오류가 발생했습니다 (참조 ' + ref + ')';   // 원본 메시지는 Errors 탭에만
+      try { logError_(ref, req, msg, err && err.stack); } catch (_) {}
+    }
+    return out_(resp);
   }
 }
 function out_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/* ============ 오류코드 분류 ============
+   throw 메시지(한국어)를 안정적인 오류코드로 매핑한다. 위에서부터 먼저 매칭되는 규칙을 채택.
+   프론트 토스트에는 "[코드] 메시지"로 표시되어 사용자가 원인을 바로 조회할 수 있다.
+   앞쪽 규칙일수록 더 구체적 — 순서 변경 시 오분류 주의. 프론트 ERR_CATALOG(app-core.js)와 함께 관리. */
+function classifyError_(m) {
+  m = String(m || '');
+  var RULES = [
+    [/삭제할 수 없습니다/, 'E5001'],                          // 재고 남음/BOM/위치 사용 중
+    [/다른 사용자가 먼저 수정/, 'E3001'],                     // 버전 충돌
+    [/관리자 권한/, 'E2003'],
+    [/로그인이 필요/, 'E2001'],
+    [/아이디 또는 비밀번호/, 'E2002'],
+    [/동기화 토큰|syncToken/, 'E2004'],
+    [/재고 부족/, 'E1002'],
+    [/실사 수량은 0 이상/, 'E1003'],
+    [/실사 수량이 현재고와 같/, 'E1004'],
+    [/이동할 위치를 선택|현재 위치와 동일/, 'E1005'],
+    [/잘못된 처리 유형|잘못된 상태값/, 'E1006'],
+    [/수량은 1 이상|소요량은 1 이상/, 'E1001'],
+    [/한 번에 최대|처리할 항목이 없|등록할 품번이 없|등록할 BOM이 없/, 'E1007'],
+    [/품번 형식/, 'E1008'],
+    [/이미 존재/, 'E1009'],
+    [/순환 구조|자기 자신을 구성품|중복 자식/, 'E1011'],
+    [/조립품\(BOM 상위\)이 아/, 'E1102'],
+    [/등록되지 않은|미등록/, 'E1101'],
+    [/입력하세요|입력값 부족|필요합니다|첨부 파일이 없|새 비밀번호가 없/, 'E1010'],
+    [/찾을 수 없습니다/, 'E4001'],
+    [/시트 없음|setup/, 'E9001'],
+    [/알 수 없는 요청/, 'E9002']
+  ];
+  for (var i = 0; i < RULES.length; i++) { if (RULES[i][0].test(m)) return RULES[i][1]; }
+  return 'E9000';                                // 미분류(예기치 못한 시스템 오류)
+}
+
+/* 미분류(E9000) 오류만 Errors 시트에 적재 — 참조번호로 관리자가 원인을 추적. best-effort(실패해도 무시). */
+function logError_(ref, req, message, stack) {
+  var sh = getOrCreate_('Errors', ['ref', 'ts', 'iso', 'action', 'user', 'message', 'stack']);
+  var action = '', user = '';
+  try { action = req && req.action ? String(req.action) : ''; } catch (e1) {}
+  try { user = req && req.auth && req.auth.id ? String(req.auth.id) : ''; } catch (e2) {}
+  sh.appendRow([ref, Date.now(), new Date().toISOString(), action, user, String(message || '').slice(0, 500), String(stack || '').slice(0, 1000)]);
 }
 
 /* ============ 라우팅 ============ */

@@ -99,18 +99,25 @@ async function fileToPayload(file){
 /* ---------- API 클라이언트 ----------
    Content-Type: text/plain 으로 전송해 CORS preflight 를 피함 (Apps Script 표준 패턴) */
 async function api(action, payload={}, opt={}){
-  if(!S.api) throw new Error('서버 주소가 설정되지 않았습니다');
+  if(!S.api) throw apiErr('E0003','서버 주소가 설정되지 않았습니다');
   const body = JSON.stringify(Object.assign({ action, auth:S.auth }, payload));
   let res;
   try{
     res = await fetch(S.api, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body });
-  }catch(e){ throw new Error('서버에 연결할 수 없습니다. 주소와 네트워크를 확인하세요'); }
+  }catch(e){ throw apiErr('E0001','서버에 연결할 수 없습니다. 주소와 네트워크를 확인하세요'); }
+  if(!res.ok) throw apiErr('E0002','서버 응답 오류 (HTTP '+res.status+') — Apps Script 배포 설정(액세스: 모든 사용자)을 확인하세요');
   let json;
   try{ json = await res.json(); }
-  catch(e){ throw new Error('서버 응답 오류 — Apps Script 배포 설정(액세스: 모든 사용자)을 확인하세요'); }
-  if(!json.ok) throw new Error(json.error || '요청 실패');
+  catch(e){ throw apiErr('E0002','서버 응답 형식 오류 — Apps Script 배포 설정(액세스: 모든 사용자)을 확인하세요'); }
+  if(!json.ok) throw apiErr(json.code||'E9000', json.error||'요청 실패', json.ref);
   if(json.snapshot && !opt.noApply) applySnapshot(json.snapshot);
   return json;
+}
+/* 오류코드를 메시지 앞에 붙여 Error 로 만든다 → 기존 toast(e.message) 들이 자동으로 "[코드] 메시지"를 노출.
+   e.code / e.ref 로 프로그램적 접근도 가능. 코드 정의·설명은 ERR_CATALOG(하단) 참고. */
+function apiErr(code, message, ref){
+  const e = new Error('['+code+'] '+message+(ref?(' · 참조 '+ref):''));
+  e.code = code; e.ref = ref||''; return e;
 }
 function applySnapshot(d){
   S.users = d.users||[]; S.items = d.items||[];
@@ -285,8 +292,68 @@ function openMoreSheet(){
       const cnt = id==='issue' && S.openIssueCount ? `<span class="cnt">${S.openIssueCount}</span>` : '';
       return `<button class="more-item" data-more="${id}"><span class="ic">${m.ic}</span><span class="tx"><b>${m.label}</b><span>${m.desc}</span></span>${cnt}</button>`;
     }).join('')}
-  </div>`);
+  </div>
+  <button class="more-help" id="moreErrHelp">⚠️ 오류코드 안내</button>`);
   document.querySelectorAll('[data-more]').forEach(b=>b.onclick=()=>{ closeModal(); go(b.dataset.more); });
+  $('#moreErrHelp').onclick = ()=>{ closeModal(); openErrorHelp(); };
+}
+
+/* ---------- 오류코드 참조표 ----------
+   토스트 메시지 앞의 [코드]로 원인을 조회. 백엔드 classifyError_(Code.gs)와 코드 체계를 함께 관리.
+   각 항목: [코드, 제목, 원인, 해결]. */
+const ERR_CATALOG = [
+  { grp:'통신 · 접속 (E0)', items:[
+    ['E0001','서버 연결 실패','인터넷 끊김 · 서버 주소 오타 · 방화벽 차단','네트워크 확인, 로그인 화면의 웹앱 URL(…/exec) 재확인'],
+    ['E0002','서버 응답 오류','Apps Script 배포 액세스가 "모든 사용자"가 아님 · 재배포 누락 · URL이 exec가 아님','Apps Script 배포 관리에서 액세스 확인 후 새 버전 배포'],
+    ['E0003','서버 주소 미설정','앱에 웹앱 URL이 비어 있음','로그인 화면에서 웹앱 URL 입력'],
+  ]},
+  { grp:'입력 · 검증 (E1)', items:[
+    ['E1001','수량·소요량 오류','수량/소요량이 1 미만','1 이상의 정수 입력'],
+    ['E1002','재고 부족','출고·조립 수량이 현재고보다 큼','현재고 확인 후 수량 조정 · 입고 먼저'],
+    ['E1003','실사 수량 오류','실사 수량이 0 미만','0 이상 입력'],
+    ['E1004','실사=현재고','조정할 차이가 없음','실물 수량 재확인'],
+    ['E1005','이동 위치 오류','위치 미선택 또는 현재 위치와 동일','다른 위치 선택'],
+    ['E1006','잘못된 처리 유형','백엔드가 모르는 처리 유형 → 대개 Code.gs 재배포 누락','Code.gs 최신 버전 재배포'],
+    ['E1007','요청 건수 오류','빈 요청 또는 200건 초과','건수를 나눠 처리'],
+    ['E1008','품번 형식 오류','품번에 허용되지 않은 문자','영문/숫자/하이픈만 사용'],
+    ['E1009','중복 데이터','이미 존재하는 아이디/품번/위치/BOM','기존 항목 확인'],
+    ['E1010','필수 입력 누락','품명·제목 등 필수값이 비어 있음','필수 항목 입력'],
+    ['E1011','BOM 구조 오류','순환 구조 · 자기 참조 · 중복 자식','구성 관계 재확인'],
+    ['E1101','미등록 품번/리비전','스캔·입력한 품번이 마스터에 없음','AppSheet 동기화 또는 관리 → 품번 등록'],
+    ['E1102','조립품 아님','BOM 상위가 아닌 품번을 조립/분해 시도','구성품이 있는 조립품만 가능'],
+  ]},
+  { grp:'권한 · 인증 (E2)', items:[
+    ['E2001','로그인 필요','인증 정보 없음/만료','다시 로그인'],
+    ['E2002','아이디/비밀번호 오류','로그인 정보 불일치','정보 확인 후 재시도'],
+    ['E2003','관리자 권한 필요','작업자 계정이 관리 기능 시도','관리자 계정으로 로그인'],
+    ['E2004','동기화 토큰 오류','AppSheet 연동 토큰 불일치/미설정','관리 → 알림/연동에서 토큰 설정'],
+  ]},
+  { grp:'충돌 · 리소스 (E3·E4·E5)', items:[
+    ['E3001','수정 충돌','다른 사용자가 먼저 저장함','새로고침 후 다시 시도'],
+    ['E4001','대상 없음','수정·삭제 대상이 이미 없음','새로고침 후 확인'],
+    ['E5001','삭제 제약','재고 남음 · BOM 등록 · 위치 사용 중이라 삭제 불가','연관 관계·재고 정리 후 삭제'],
+  ]},
+  { grp:'시스템 (E9)', items:[
+    ['E9000','서버 처리 오류(미분류)','예기치 못한 서버 오류 — 참조번호가 함께 표시됨','참조번호를 관리자에게 전달 → 구글시트 Errors 탭에서 원문·스택 확인'],
+    ['E9001','초기화 안 됨','필요한 시트가 없음','Apps Script setup() 실행'],
+    ['E9002','알 수 없는 요청','프론트/백엔드 버전 불일치','양쪽 최신 배포'],
+  ]},
+];
+function openErrorHelp(){
+  const body = ERR_CATALOG.map(g=>`
+    <div class="err-grp">${esc(g.grp)}</div>
+    ${g.items.map(([code,title,cause,fix])=>`
+      <div class="err-row">
+        <div class="err-code">${esc(code)}</div>
+        <div class="err-desc"><b>${esc(title)}</b>
+          <div class="muted">원인 · ${esc(cause)}</div>
+          <div class="muted">해결 · ${esc(fix)}</div></div>
+      </div>`).join('')}`).join('');
+  openModal(`<h3>⚠️ 오류코드 안내</h3>
+    <p class="muted" style="margin:-4px 0 12px;line-height:1.5">오류 메시지 앞의 <b>[코드]</b>로 원인을 찾을 수 있습니다.
+    <b>E9000</b>은 함께 표시되는 <b>참조번호</b>를 알려주시면 관리자가 구글시트 <b>Errors</b> 탭에서 정확한 원인을 확인할 수 있습니다.</p>
+    <div class="err-help">${body}</div>
+    <div class="row" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">닫기</button></div>`);
 }
 async function go(tab){
   if(S.tab==='scan' && tab!=='scan') stopScan();

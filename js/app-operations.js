@@ -802,4 +802,5 @@ function admData(){
   $('#loginPw').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
   $('#logoutBtn').onclick = doLogout;
   $('#refreshBtn').onclick = refreshNow;
+  $('#errHelpLink').onclick = openErrorHelp;
 })();
