@@ -24,6 +24,7 @@ function renderScan(){
     <div class="sec-title">📷 스캔 입·출고</div>
     <div class="card">
       <div id="reader"></div>
+      <p class="muted" id="focusHint" style="margin-top:6px;display:none">💡 흐릿하면 화면을 한 번 <b>탭</b>하세요 — 초점을 다시 잡습니다.</p>
       <div class="row" style="margin-top:10px">
         <button class="btn btn-primary" id="scanToggle">카메라 스캔 시작</button>
       </div>
@@ -56,6 +57,8 @@ async function startScan(){
     await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox },
       txt=>onCode(txt,false), ()=>{});
     S.scanning = true;
+    setupTapFocus('reader');   // 탭하여 초점 재조정
+    { const fh=$('#focusHint'); if(fh) fh.style.display='block'; }
     $('#scanToggle').textContent='카메라 스캔 중지';
     $('#scanToggle').classList.replace('btn-primary','btn-danger');
   }catch(e){
@@ -65,7 +68,60 @@ async function startScan(){
 async function stopScan(rerender){
   if(S.scanner && S.scanning){ try{ await S.scanner.stop(); S.scanner.clear(); }catch(e){} }
   S.scanning=false; S.scanner=null;
+  { const fh=$('#focusHint'); if(fh) fh.style.display='none'; }
   if(rerender && S.tab==='scan' && $('#scanToggle')){ $('#scanToggle').textContent='카메라 스캔 시작'; $('#scanToggle').classList.replace('btn-danger','btn-primary'); }
+}
+
+/* =========================================================
+   탭하여 초점 재조정 — 기본은 연속(오토) 초점, 화면 탭 시 단발 재초점 후 연속 복귀.
+   지원: 안드로이드 크롬(focusMode/pointsOfInterest). 미지원(iOS 사파리 등)은 조용히 무시.
+========================================================= */
+let _lastFocusAt = 0;
+function setupTapFocus(readerId){
+  const attach = tries => {
+    const reader = document.getElementById(readerId);
+    const video = reader && reader.querySelector('video');
+    const track = video && video.srcObject && video.srcObject.getVideoTracks && video.srcObject.getVideoTracks()[0];
+    if(!track){ if(tries>0) setTimeout(()=>attach(tries-1), 250); return; }   // 비디오 트랙 준비될 때까지 잠깐 대기
+    try{ const caps = track.getCapabilities ? track.getCapabilities() : {};   // 기본: 연속(오토) 초점
+      if(caps.focusMode && caps.focusMode.indexOf('continuous')>=0) track.applyConstraints({ advanced:[{ focusMode:'continuous' }] }).catch(()=>{}); }catch(e){}
+    reader.style.position = 'relative'; reader.style.cursor = 'pointer';
+    reader.onclick = e => tapFocusAt(track, reader, e);
+  };
+  attach(4);
+}
+async function tapFocusAt(track, reader, e){
+  const now = Date.now();
+  if(now - _lastFocusAt < 700) return;              // 너무 잦은 재초점 방지(쓰로틀)
+  _lastFocusAt = now;
+  let caps = {}; try{ caps = track.getCapabilities ? track.getCapabilities() : {}; }catch(err){ return; }
+  const modes = caps.focusMode || [];
+  if(!modes.length && !caps.pointsOfInterest) return;   // 초점 제어 미지원 → 무시(iOS 등)
+  const adv = {};
+  if(caps.pointsOfInterest){                         // 탭한 좌표를 초점 지점으로(지원 기기)
+    const r = reader.getBoundingClientRect();
+    adv.pointsOfInterest = [{ x: Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)), y: Math.min(1,Math.max(0,(e.clientY-r.top)/r.height)) }];
+  }
+  try{
+    if(modes.indexOf('single-shot')>=0){
+      await track.applyConstraints({ advanced:[Object.assign({ focusMode:'single-shot' }, adv)] });
+      if(modes.indexOf('continuous')>=0) setTimeout(()=>track.applyConstraints({ advanced:[{ focusMode:'continuous' }] }).catch(()=>{}), 1600);  // 재초점 후 연속 복귀
+    }else if(modes.indexOf('continuous')>=0){
+      await track.applyConstraints({ advanced:[Object.assign({ focusMode:'continuous' }, adv)] });
+    }else if(adv.pointsOfInterest){
+      await track.applyConstraints({ advanced:[adv] });
+    }else return;
+    focusRing(reader, e);                            // 시각 피드백(초점 링)
+  }catch(err){}
+}
+function focusRing(reader, e){
+  const r = reader.getBoundingClientRect();
+  const ring = document.createElement('div');
+  ring.className = 'focus-ring';
+  ring.style.left = (e.clientX - r.left) + 'px';
+  ring.style.top = (e.clientY - r.top) + 'px';
+  reader.appendChild(ring);
+  setTimeout(()=>ring.remove(), 700);
 }
 
 /* =========================================================
@@ -94,6 +150,7 @@ async function openScanModal(onDetect){
       await stopModalScan(); closeModal();
       onDetect(txt);
     }, ()=>{});
+    setupTapFocus('scanModalReader');   // 탭하여 초점 재조정
   }catch(e){
     await stopModalScan(); closeModal();
     toast('카메라를 열 수 없습니다. HTTPS 접속·카메라 권한을 확인하거나 직접 입력하세요','err');

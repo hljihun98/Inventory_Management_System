@@ -435,6 +435,12 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 .err-desc{font-size:13px;line-height:1.5}
 .err-desc .muted{font-size:12px}
 
+/* ---------- 탭 초점 재조정 링 ---------- */
+.focus-ring{position:absolute;width:66px;height:66px;margin:-33px 0 0 -33px;border:2px solid #fff;border-radius:50%;
+  box-shadow:0 0 0 1px rgba(0,0,0,.45),inset 0 0 6px rgba(0,0,0,.25);pointer-events:none;z-index:5;
+  animation:focusPulse .7s ease-out forwards}
+@keyframes focusPulse{0%{transform:scale(1.4);opacity:0}25%{opacity:1}100%{transform:scale(1);opacity:0}}
+
 /* ---------- 입력칸 옆 바코드 스캔 버튼 ---------- */
 .scan-icon-btn{flex:none!important;width:48px;display:inline-flex;align-items:center;justify-content:center;
   border:1.5px solid var(--bd2);border-radius:9px;background:var(--sf);color:var(--tx);transition:all .15s}
