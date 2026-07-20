@@ -238,6 +238,40 @@ function bindIssueEvents(){
 }
 
 /* =========================================================
+   재고 조정·이동 (더보기) — 가끔 쓰는 위치 이동 / 실사 조정 전용 화면.
+   품번을 검색·스캔해 선택하면 이동/조정 시트가 열린다(openTxSheet의 MOVE/ADJUST 모드).
+========================================================= */
+function renderMoveAdjust(){
+  const q = (S._maQ||'').toLowerCase();
+  let items = S.items.filter(i=>!q || (i.name||'').toLowerCase().includes(q) || i.code.toLowerCase().includes(q) || String(i.rev||'').toLowerCase().includes(q));
+  const total = items.length;
+  items = items.slice().sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev))).slice(0,80);
+  $('#main').innerHTML = `
+    <div class="sec-title">🔧 재고 조정·이동</div>
+    <div class="card" style="font-size:12.5px;color:var(--t2);line-height:1.65">
+      <b style="color:var(--tx)">이동</b> = 재고 수량은 그대로 두고 <b>보관 위치만</b> 변경 ·
+      <b style="color:var(--tx)">조정</b> = 실사 후 시스템 재고를 <b>실물 수량에 맞춤</b>(차이 자동 기록).<br>
+      자주 쓰지 않는 작업이라 여기 모아두었습니다. 품번을 검색하거나 바코드로 찾아 선택하세요.
+    </div>
+    <div class="searchbar"><input id="maQ" placeholder="품명 / 품번 검색" value="${esc(S._maQ||'')}">
+      <button class="scan-icon-btn" id="maScan" title="바코드 스캔" aria-label="바코드 스캔">${BARCODE_SVG}</button></div>
+    ${items.length?items.map(i=>`
+      <button class="ma-row" data-ma="${esc(i.code)}" data-ma-rev="${esc(i.rev||'')}">
+        <div class="ma-info"><div class="nm">${esc(i.name||i.code)} ${i.rev?`<span class="chip chip-gray">Rev ${esc(i.rev)}</span>`:''}</div>
+          <div class="cd">${esc(skuOf(i.code,i.rev))} · 📍${esc(i.location||'미지정')}</div></div>
+        <div class="qty"><b>${fmt(i.stock)}</b> <span>${esc(i.unit||'')}</span></div>
+      </button>`).join('') + (total>80?`<div class="muted" style="text-align:center;padding:10px">상위 80개만 표시 · 검색으로 좁혀주세요 (총 ${fmt(total)}개)</div>`:'')
+      : `<div class="empty"><b>일치하는 품번이 없습니다</b>검색어를 확인하세요.</div>`}`;
+  $('#maQ').oninput = e=>{ S._maQ=e.target.value; renderMoveAdjust(); const v=$('#maQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
+  $('#maScan').onclick = ()=> openScanModal(txt=>{
+    const p = parseScan(txt), r = resolveScan(skuOf(p.code,p.rev));
+    if(r.item) openTxSheet(r.item.code, r.item.rev||'', ['MOVE','ADJUST']);
+    else { S._maQ = p.code; renderMoveAdjust(); toast('해당 품번을 찾지 못해 검색어로 넣었습니다','err'); }
+  });
+  document.querySelectorAll('[data-ma]').forEach(b=>b.onclick=()=>openTxSheet(b.dataset.ma, b.dataset.maRev||'', ['MOVE','ADJUST']));
+}
+
+/* =========================================================
    리포트 · 대시보드 (인앱 차트 + Looker Studio 연동 안내)
 ========================================================= */
 function renderReport(){

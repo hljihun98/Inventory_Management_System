@@ -440,3 +440,28 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
   border:1.5px solid var(--bd2);border-radius:9px;background:var(--sf);color:var(--tx);transition:all .15s}
 .scan-icon-btn:hover{border-color:var(--ac);color:var(--ac);background:var(--acl)}
 .scan-icon-btn:active{transform:translateY(1px)}
+
+/* ---------- 재고 카드 입·출고 버튼 ---------- */
+.item-actions{display:flex;justify-content:flex-end;padding:0 14px 12px}
+.item-actions .btn-sm{padding:7px 15px;font-weight:600}
+
+/* ---------- 부품 상세 모달 ---------- */
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.dg-cell{background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:9px 11px;display:flex;flex-direction:column;gap:3px}
+.dg-k{font-family:var(--fm);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--t3)}
+.dg-v{font-size:17px;font-weight:700;font-family:var(--fd)}
+.dg-v.low{color:var(--out)}
+.detail-warn{margin-top:10px;background:var(--rel);color:var(--re-dark);border:1px solid var(--re);border-radius:9px;padding:9px 12px;font-size:13px;font-weight:600}
+.detail-actions{display:flex;flex-wrap:wrap;gap:8px}
+.detail-actions .btn{flex:1 1 auto;min-width:calc(50% - 4px)}
+
+/* ---------- 재고 조정·이동 품번 행 ---------- */
+.ma-row{width:100%;display:flex;align-items:center;gap:10px;text-align:left;padding:11px 14px;margin-bottom:8px;
+  background:var(--sf);border:1px solid var(--bd);border-radius:12px;transition:all .15s}
+.ma-row:hover{border-color:var(--ac);background:var(--acl)}
+.ma-row .ma-info{flex:1;min-width:0}
+.ma-row .nm{font-weight:600;font-size:14px}
+.ma-row .cd{font-family:var(--fm);font-size:11.5px;color:var(--t2);margin-top:2px}
+.ma-row .qty{flex:none;text-align:right}
+.ma-row .qty b{font-size:18px;font-family:var(--fd)}
+.ma-row .qty span{font-size:11px;color:var(--t2)}

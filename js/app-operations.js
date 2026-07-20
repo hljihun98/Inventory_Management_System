@@ -329,6 +329,124 @@ function renderBomTree(code, rev, mult, path){
     </div>`;
   }).join('')}</div>`;
 }
+/* =========================================================
+   부품 상세 모달 — 재고 카드 본문을 탭하면 이 부품이 무엇인지 한눈에 보여준다.
+   (품명·품번·제품군·현재고·안전재고·위치·조립정보·최근 이력 + 바로가기)
+========================================================= */
+function openItemDetail(code, rev){
+  const it = findItem(code, rev);
+  if(!it) return toast('품번을 찾을 수 없습니다','err');
+  const qty = Number(it.stock||0), low = it.safetyStock>0 && qty < it.safetyStock;
+  const assy = isAssy(it.code, it.rev), buildable = assy ? buildableOf(it.code, it.rev) : null;
+  const lc = locOf(it.location);
+  const recent = S.hist.filter(h=>h.itemCode===it.code && String(h.rev||'')===String(it.rev||'')).slice(-6).reverse();
+  openModal(`
+    <h3>${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''}</h3>
+    <div class="muted" style="font-family:var(--mono);margin:-4px 0 12px">${esc(skuOf(it.code,it.rev))} · ${esc(groupNameOf(it.code))}</div>
+    <div class="detail-grid">
+      <div class="dg-cell"><span class="dg-k">현재고</span><span class="dg-v ${low?'low':''}">${fmt(qty)}${esc(it.unit||'')}${low?' ⚠️':''}</span></div>
+      <div class="dg-cell"><span class="dg-k">안전재고</span><span class="dg-v">${it.safetyStock>0?fmt(it.safetyStock)+esc(it.unit||''):'—'}</span></div>
+      <div class="dg-cell"><span class="dg-k">보관 위치</span><span class="dg-v" style="font-size:15px">${it.location?esc(it.location):'미지정'}</span></div>
+      <div class="dg-cell"><span class="dg-k">창고·구역·랙</span><span class="dg-v" style="font-size:13px">${lc?esc(lc.warehouse+' · '+lc.zone+' · '+lc.rack):'—'}</span></div>
+      ${assy?`<div class="dg-cell"><span class="dg-k">조립 가능</span><span class="dg-v">${fmt(buildable)}${esc(it.unit||'')}</span></div>
+      <div class="dg-cell"><span class="dg-k">구성품</span><span class="dg-v">${bomChildrenOf(it.code,it.rev).length}종</span></div>`:''}
+    </div>
+    ${low?`<div class="detail-warn">⚠️ 안전재고 미달 — 보충이 필요합니다</div>`:''}
+    <div class="detail-actions" style="margin:12px 0">
+      <button class="btn btn-move" id="dtTx">⇅ 입·출고</button>
+      ${assy?`<button class="btn btn-ghost" id="dtAssy">🔧 조립/분해</button>`:''}
+      <button class="btn btn-ghost" id="dtDoc">📁 문서·사진</button>
+      <button class="btn btn-ghost" id="dtIssue">🚨 이상신고</button>
+    </div>
+    <div class="dg-k">최근 입·출고</div>
+    <div class="card" style="margin-top:6px">${recent.length?recent.map(h=>`
+      <div class="hist-line" style="padding:6px 0">
+        <div class="when">${new Date(h.ts).toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'})}</div>
+        <div class="what"><span class="chip chip-${histChipCls(h.type)}">${TYPE_KO[h.type]||h.type}</span> <span class="muted">${esc(h.user||'')}${h.reason?' · '+esc(h.reason):''}</span></div>
+        ${HIST_POS.includes(h.type)?`<div class="q in">+${fmt(h.qty)}</div>`:HIST_NEG.includes(h.type)?`<div class="q out">−${fmt(h.qty)}</div>`:h.type==='ADJUST'?`<div class="q ${h.after>=h.before?'in':'out'}">${h.after>=h.before?'+':'−'}${fmt(Math.abs(h.after-h.before))}</div>`:''}
+      </div>`).join(''):'<div class="muted" style="padding:2px 0">이력 없음</div>'}</div>
+    <div class="row" style="margin-top:12px"><button class="btn btn-ghost" id="dtClose" style="width:100%">닫기</button></div>
+  `);
+  $('#dtTx').onclick = ()=>{ closeModal(); openTxSheet(it.code, it.rev||'', ['IN','OUT']); };
+  { const b=$('#dtAssy'); if(b) b.onclick=()=>{ closeModal(); openAssyDetail(it.code, it.rev||''); }; }
+  $('#dtDoc').onclick = ()=>{ closeModal(); S._docCode=it.code; S._docRev=it.rev||''; go('doc'); };
+  $('#dtIssue').onclick = ()=>{ closeModal(); S._isCode=it.code; S._isRev=it.rev||''; S._issueTab='new'; go('issue'); };
+  $('#dtClose').onclick = ()=>closeModal();
+}
+
+/* =========================================================
+   입·출고 바텀시트 — 재고현황/상세에서 바로 처리. modes 로 노출 작업 제한
+   (재고 카드=['IN','OUT'] · 조정·이동 화면=['MOVE','ADJUST']). 백엔드는 기존 api('tx') 공유.
+========================================================= */
+function openTxSheet(code, rev, modes){
+  modes = (modes && modes.length) ? modes : ['IN','OUT'];
+  const it = findItem(code, rev);
+  if(!it) return toast('품번을 찾을 수 없습니다','err');
+  const NAMES={IN:'입고',OUT:'출고',MOVE:'이동',ADJUST:'조정'};
+  const ONCLS={IN:'on-in',OUT:'on-out',MOVE:'on-move',ADJUST:'on-warn'};
+  const BTN={IN:'btn-in',OUT:'btn-out',MOVE:'btn-move',ADJUST:'btn-move'};
+  const LABEL={IN:'입고 처리',OUT:'출고 처리',MOVE:'위치 이동',ADJUST:'재고 조정'};
+  const HELP={MOVE:'재고 수량은 그대로 두고 보관 위치만 바꿉니다.',ADJUST:'실물을 세어 시스템 재고를 실제 수량에 맞춥니다(차이는 자동 기록).'};
+  let mode = modes[0];
+  const draw = ()=>{
+    const cur = Number(findItem(code,rev)?.stock||0);
+    openModal(`
+      <h3>⇅ <span style="font-family:var(--mono)">${esc(skuOf(it.code,it.rev))}</span></h3>
+      <div class="muted" style="margin:-4px 0 12px">${esc(it.name||it.code)} · 현재고 <b>${fmt(cur)}${esc(it.unit||'')}</b> · 📍${esc(it.location||'미지정')}</div>
+      <div class="seg seg-compact" style="margin-bottom:12px">
+        ${modes.map(m=>`<button data-txm="${m}" class="${mode===m?ONCLS[m]:''}">${NAMES[m]}</button>`).join('')}
+      </div>
+      ${HELP[mode]?`<p class="muted" style="margin:-4px 0 10px">ℹ️ ${esc(HELP[mode])}</p>`:''}
+      ${mode!=='MOVE'?`<div class="field"><label>${mode==='ADJUST'?'실사 수량 (실물 카운트)':'수량'}</label>
+        <div class="big-qty"><button id="txMinus">−</button><input id="txVal" type="number" min="${mode==='ADJUST'?0:1}" value="${mode==='ADJUST'?cur:1}" inputmode="numeric"><button id="txPlus">+</button></div>
+        ${mode==='ADJUST'?`<p class="muted" style="margin-top:6px">현재 재고 <b>${fmt(cur)}${esc(it.unit||'')}</b> — 실물 수량을 입력하면 차이만큼 조정됩니다</p>`:''}</div>`:''}
+      ${mode==='IN'?`<div class="field"><label>보관 위치 (선택)</label><select id="txLoc"><option value="">- 미지정 -</option>${S.locs.map(l=>`<option value="${esc(l.code)}" ${it.location===l.code?'selected':''}>${esc(l.code)} · ${esc(l.warehouse)} ${esc(l.zone)} ${esc(l.rack)}</option>`).join('')}</select></div>`:''}
+      ${mode==='MOVE'?`<div class="field"><label>현재 위치</label><input value="${esc(it.location||'미지정')}" disabled style="opacity:.65"></div>
+        <div class="field"><label>이동할 위치</label><select id="txMoveLoc"><option value="">- 위치 선택 -</option>${S.locs.filter(l=>l.code!==it.location).map(l=>`<option value="${esc(l.code)}">${esc(l.code)} · ${esc(l.warehouse)} ${esc(l.zone)} ${esc(l.rack)}</option>`).join('')}</select>
+        ${S.locs.length?'':'<p class="muted" style="margin-top:6px">등록된 위치가 없습니다. 관리 → 위치에서 먼저 등록하세요.</p>'}</div>`:''}
+      <div class="field"><label>사유 (선택)</label><input id="txReason" placeholder="${mode==='IN'?'예: 정기 입고':mode==='OUT'?'예: 생산 투입':mode==='MOVE'?'예: 랙 재배치':'예: 정기 실사'}"></div>
+      ${mode==='IN'?`<button class="btn btn-ghost btn-sm" id="txDetail" style="width:100%;margin-bottom:10px">📷 사진·품질검사가 필요하면 정밀 입고(스캔) →</button>`:''}
+      <div class="row"><button class="btn btn-ghost" id="txCancel">취소</button><button class="btn ${BTN[mode]}" id="txGo">${LABEL[mode]}</button></div>
+    `);
+    document.querySelectorAll('[data-txm]').forEach(b=>b.onclick=()=>{ mode=b.dataset.txm; draw(); });
+    { const mB=$('#txMinus'), pB=$('#txPlus'), fl=mode==='ADJUST'?0:1;
+      if(mB) mB.onclick=()=>{ const i=$('#txVal'); i.value=Math.max(fl,Number(i.value)-1); };
+      if(pB) pB.onclick=()=>{ const i=$('#txVal'); i.value=Number(i.value)+1; }; }
+    $('#txCancel').onclick = ()=>closeModal();
+    { const dt=$('#txDetail'); if(dt) dt.onclick=()=>{ closeModal(); S.scanTarget={code:it.code,rev:it.rev||''}; S.scanMode='IN'; S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined; S._inPhotos=[]; S._inReason=''; go('scan'); }; }
+    $('#txGo').onclick = ()=>busy($('#txGo'), ()=>submitTxSheet(code, rev, mode));
+  };
+  draw();
+}
+async function submitTxSheet(code, rev, mode){
+  const reason = ($('#txReason')?.value||'').trim();
+  try{
+    if(mode==='MOVE'){
+      const toLoc = $('#txMoveLoc').value;
+      if(!toLoc) return toast('이동할 위치를 선택하세요','err');
+      await api('tx', { type:'MOVE', code, rev, loc:toLoc, reason });
+      toast(`위치 이동 완료 → ${toLoc}`,'ok');
+    }else if(mode==='ADJUST'){
+      const counted = Math.floor(Number($('#txVal').value));
+      if(isNaN(counted)||counted<0) return toast('실사 수량은 0 이상이어야 합니다','err');
+      const curStock = Number(findItem(code,rev)?.stock||0);
+      if(counted===curStock) return toast('실사 수량이 현재고와 같습니다','err');
+      const diff = counted-curStock;
+      if(!confirm(`재고 실사 조정\n현재고 ${fmt(curStock)} → 실물 ${fmt(counted)} (${diff>=0?'+':''}${fmt(diff)})\n이대로 조정할까요?`)) return;
+      const r = await api('tx', { type:'ADJUST', code, rev, qty:counted, reason });
+      toast(`재고 조정 완료 (${diff>=0?'+':''}${fmt(diff)} · 현재고 ${fmt(r.after)})`,'ok');
+    }else{
+      const qty = Math.floor(Number($('#txVal').value)||0);
+      if(qty<1) return toast('수량은 1 이상이어야 합니다','err');
+      const loc = mode==='IN' ? $('#txLoc').value : '';
+      const r = await api('tx', { type:mode, code, rev, qty, loc, reason });
+      toast(mode==='IN'?`입고 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`:`출고 −${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`,'ok');
+    }
+    if(navigator.vibrate) navigator.vibrate(20);
+    closeModal(); renderCurrent();   // 처리 후 현재 화면(재고/조정·이동) 즉시 갱신
+  }catch(e){ toast(e.message,'err'); }
+}
+
 function openAssyDetail(code, rev){
   S._assyView = { code, rev: rev||'' };
   S._assyQty = S._assyQty || 1;
@@ -678,18 +796,17 @@ function admBOM(){
       }).join('') : '<div class="empty" style="margin-top:8px"><b>등록된 BOM이 없습니다</b>아래에서 붙여넣기로 등록하세요.</div>'}
     </div>
     <div class="card"><b style="font-size:14px">📥 BOM 일괄 붙여넣기</b>
-      <p class="muted" style="margin:6px 0 10px">엑셀/시트에서 <b>부모품번 · 부모Rev · 자식품번 · 자식Rev · 소요량</b> 순서(탭 구분)로 복사해 붙여넣으세요. 한 줄에 한 구성. 품번 칸에 <b style="font-family:var(--mono)">RP-303-013 (D)</b> 처럼 넣으면 리비전이 자동 분리됩니다.</p>
+      <p class="muted" style="margin:6px 0 10px">엑셀/시트에서 <b>부모품번 · 자식품번 · 소요량</b> 3열(탭 구분)로 복사해 붙여넣으세요. 한 줄에 한 구성. <b>Rev은 자동으로 최신 리비전</b>이 적용됩니다. 특정 Rev이 필요할 때만 품번 칸에 <b style="font-family:var(--mono)">RP-303-013 (C)</b> 처럼 입력하세요.</p>
       <textarea id="bomText" rows="5" placeholder="RP-300-000&#9;A&#9;RP-303-013&#9;D&#9;2&#10;RP-300-000&#9;A&#9;RG-101-002&#9;A&#9;4" style="width:100%;padding:10px;border:1.5px solid var(--bd);border-radius:9px;font-family:var(--mono);font-size:13px;white-space:pre;overflow-x:auto"></textarea>
       <button class="btn btn-primary" id="bomBulkAdd" style="width:100%;margin-top:10px">붙여넣은 BOM 일괄 등록</button>
       <div id="bomResult"></div></div>
     <div class="card"><b style="font-size:14px">구성 1건 추가</b>
-      <div class="row" style="margin-top:10px">
+      <p class="muted" style="margin:6px 0 2px">Rev은 각 품번의 <b>최신 리비전</b>이 자동 적용됩니다. 특정 Rev이 필요할 때만 품번 칸에 <b style="font-family:var(--mono)">RP-303-013 (C)</b> 처럼 입력하세요.</p>
+      <div class="row" style="margin-top:8px">
         <div class="field" style="flex:2"><label>부모 품번</label><input id="b1pc" placeholder="RP-300-000" style="text-transform:uppercase"></div>
-        <div class="field"><label>부모 Rev</label><input id="b1pr" style="text-transform:uppercase"></div></div>
-      <div class="row">
-        <div class="field" style="flex:2"><label>자식 품번</label><input id="b1cc" placeholder="RP-303-013" style="text-transform:uppercase"></div>
-        <div class="field"><label>자식 Rev</label><input id="b1cr" style="text-transform:uppercase"></div>
         <div class="field"><label>소요량</label><input id="b1q" type="number" min="1" value="1"></div></div>
+      <div class="field"><label>자식 품번</label><input id="b1cc" placeholder="RP-303-013" style="text-transform:uppercase"></div>
+      <div id="b1info" class="muted" style="margin:-4px 0 8px;min-height:16px"></div>
       <button class="btn btn-primary" id="b1add">추가</button></div>`;
   document.querySelectorAll('[data-bom-del]').forEach(b=>b.onclick=async ()=>{
     if(!confirm('이 구성을 삭제할까요?')) return;
@@ -699,9 +816,12 @@ function admBOM(){
   $('#bomBulkAdd').onclick = ()=>busy($('#bomBulkAdd'), async ()=>{
     const rows = ($('#bomText').value||'').replace(/\r/g,'').split('\n').map(l=>l.split('\t').map(c=>c.trim())).filter(c=>c.join('')!=='')
       .map(c=>{
-        let pc=c[0]||'', pr=c[1]||'', cc=c[2]||'', cr=c[3]||'', q=c[4]||'';
-        const pp=parseScan(pc); if(pp.rev){ pc=pp.code; if(!pr) pr=pp.rev; }   // "(D)" 인라인 리비전 분리(칸 이동 없음)
-        const cp=parseScan(cc); if(cp.rev){ cc=cp.code; if(!cr) cr=cp.rev; }
+        let pc=c[0]||'', cc=c[1]||'', q=c[2]||'', pr='', cr='';
+        const pp=parseScan(pc); if(pp.rev){ pc=pp.code; pr=pp.rev; }   // "(C)" 인라인 리비전만 특정 지정
+        const cp=parseScan(cc); if(cp.rev){ cc=cp.code; cr=cp.rev; }
+        pc=pc.toUpperCase(); cc=cc.toUpperCase();
+        if(!pr) pr=latestRevOf(pc);   // Rev 비었으면 최신 리비전 자동 적용
+        if(!cr) cr=latestRevOf(cc);
         return { parentCode:pc, parentRev:pr, childCode:cc, childRev:cr, qtyPer:Number(q)||0 };
       });
     if(!rows.length) return toast('붙여넣은 BOM이 없습니다','err');
@@ -715,10 +835,22 @@ function admBOM(){
       if(okN) setTimeout(admBOM, 900);
     }catch(e){ toast(e.message,'err'); }
   });
+  // 입력한 품번에 대해 자동 적용될 리비전을 실시간으로 미리보기
+  const b1preview = ()=>{
+    const pv = $('#b1pc').value.trim(), cv = $('#b1cc').value.trim();
+    if(!pv && !cv){ $('#b1info').innerHTML=''; return; }
+    const parts = [];
+    if(pv){ const r=resolveBomRef(pv); parts.push(`부모 <b style="font-family:var(--mono)">${esc(skuOf(r.code,r.rev))}</b>${!findItem(r.code,r.rev)?' <span style="color:var(--out)">미등록</span>':''}`); }
+    if(cv){ const r=resolveBomRef(cv); parts.push(`자식 <b style="font-family:var(--mono)">${esc(skuOf(r.code,r.rev))}</b>${!findItem(r.code,r.rev)?' <span style="color:var(--out)">미등록</span>':''}`); }
+    $('#b1info').innerHTML = '→ ' + parts.join(' · ');
+  };
+  $('#b1pc').oninput = b1preview; $('#b1cc').oninput = b1preview;
   $('#b1add').onclick = ()=>busy($('#b1add'), async ()=>{
+    const pr = resolveBomRef($('#b1pc').value.trim()), cr = resolveBomRef($('#b1cc').value.trim());
+    if(!pr.code || !cr.code) return toast('부모·자식 품번을 입력하세요','err');
     try{
-      await api('addBOM', { parentCode:$('#b1pc').value.trim(), parentRev:$('#b1pr').value.trim(), childCode:$('#b1cc').value.trim(), childRev:$('#b1cr').value.trim(), qtyPer:Number($('#b1q').value)||0 });
-      toast('구성 추가 완료','ok'); admBOM();
+      await api('addBOM', { parentCode:pr.code, parentRev:pr.rev, childCode:cr.code, childRev:cr.rev, qtyPer:Number($('#b1q').value)||0 });
+      toast(`구성 추가 완료 · ${skuOf(cr.code,cr.rev)}`,'ok'); admBOM();
     }catch(e){ toast(e.message,'err'); }
   });
 }

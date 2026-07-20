@@ -230,6 +230,17 @@ const findItem = (code, rev) => S.items.find(i=>i.code===code && String(i.rev||'
 const locOf  = code => S.locs.find(l=>l.code===code);
 function itemQty(code, rev){ return Number(findItem(code,rev)?.stock||0); }      // 재고는 (품번+리비전) 행에 직접 저장
 function lowStockItems(){ return S.items.filter(i=>i.safetyStock>0 && Number(i.stock||0) < i.safetyStock); }
+/* 같은 품번의 리비전 중 가장 최신(사전식·숫자 정렬상 최대) 반환. 없으면 ''. BOM 등록 시 Rev 자동 결정에 사용 */
+function latestRevOf(code){
+  const revs = S.items.filter(i=>i.code===String(code||'').toUpperCase()).map(i=>String(i.rev||''));
+  if(!revs.length) return '';
+  return revs.sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}))[revs.length-1];
+}
+/* BOM 입력값을 {code, rev} 로 해석 — 품번 칸에 "(C)" 인라인 리비전이 있으면 그걸, 없으면 최신 리비전 자동 */
+function resolveBomRef(raw){
+  const p = parseScan(raw);
+  return { code: p.code, rev: p.rev || latestRevOf(p.code) };
+}
 
 /* ---------- BOM / 조립(assy) 헬퍼 (백엔드와 동일 규칙) ----------
    assy = BOM에 자식이 있는 품번(플래그 없음). 식별키 = 품번|리비전(대문자). */
@@ -292,12 +303,13 @@ const TABS = [
   { id:'loc',   ic:'🗺️', label:'위치' },
   { id:'hist',  ic:'🧾', label:'이력' },
 ];
-const MORE_TABS = ['bulkio','doc','issue','report'];
+const MORE_TABS = ['bulkio','moveadjust','doc','issue','report'];
 const MORE_META = {
-  bulkio: { ic:'📥', label:'일괄 입출고', desc:'여러 로트를 표로 한 번에 입·출고 (붙여넣기 지원)' },
-  doc:    { ic:'📁', label:'문서함',     desc:'로트별 사진·문서 보관 (Google Drive)' },
-  issue:  { ic:'🚨', label:'품질신고',   desc:'이상 신고 접수 및 처리 현황' },
-  report: { ic:'📊', label:'리포트',     desc:'재고 통계 · 대시보드 · Looker Studio' },
+  bulkio:     { ic:'📥', label:'일괄 입출고', desc:'여러 로트를 표로 한 번에 입·출고 (붙여넣기 지원)' },
+  moveadjust: { ic:'🔧', label:'재고 조정·이동', desc:'보관 위치 이동 · 실사 재고 조정 (가끔 쓰는 작업)' },
+  doc:        { ic:'📁', label:'문서함',     desc:'로트별 사진·문서 보관 (Google Drive)' },
+  issue:      { ic:'🚨', label:'품질신고',   desc:'이상 신고 접수 및 처리 현황' },
+  report:     { ic:'📊', label:'리포트',     desc:'재고 통계 · 대시보드 · Looker Studio' },
 };
 function buildTabs(){
   const moreActive = MORE_TABS.includes(S.tab);
@@ -393,7 +405,7 @@ async function go(tab){
 function renderCurrent(){
   renderAlerts();
   ({scan:renderScan, inv:renderInv, loc:renderLoc, hist:renderHist, admin:renderAdmin,
-    bulkio:renderBulkIO, doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
+    bulkio:renderBulkIO, moveadjust:renderMoveAdjust, doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
 }
 /* 수동 새로고침 — 다른 사용자가 시트를 바꿨을 때 최신 데이터로 동기화 */
 async function refreshNow(){
@@ -401,13 +413,9 @@ async function refreshNow(){
   toast('최신 데이터로 새로고침','ok');
 }
 function renderAlerts(){
-  const low = lowStockItems();
+  // 안전재고 미달 상단 경고 알람은 꺼둠 (요청). 카드의 '미달' 배지는 그대로 유지.
   const bar = $('#alertBar');
-  if(!low.length){ bar.classList.add('hidden'); return; }
-  bar.classList.remove('hidden');
-  bar.innerHTML = `⚠️ <div><b>안전재고 미달 ${low.length}건</b> — ` +
-    low.slice(0,3).map(i=>`${esc(i.name)} ${fmt(itemQty(i.code))}/${fmt(i.safetyStock)}${esc(i.unit)}`).join(', ') +
-    (low.length>3?` 외 ${low.length-3}건`:'') + `</div>`;
+  if(bar) bar.classList.add('hidden');
 }
 
 /* ---------- 모달 (더보기 시트 등에서 사용) ---------- */
@@ -470,7 +478,8 @@ function renderInv(){
   $('#invCsv').onclick = exportInvCSV;
   document.querySelectorAll('[data-grp]').forEach(b=>b.onclick=()=>{ S._invGroup=b.dataset.grp; renderInv(); });
   document.querySelectorAll('[data-gtoggle]').forEach(b=>b.onclick=()=>{ const g=b.dataset.gtoggle; S._invCollapsed.has(g)?S._invCollapsed.delete(g):S._invCollapsed.add(g); renderInv(); });
-  document.querySelectorAll('[data-assy]').forEach(el=>el.onclick=()=>openAssyDetail(el.dataset.assy, el.dataset.assyRev||''));   // 조립품 카드 → 상세/조립
+  document.querySelectorAll('[data-detail]').forEach(el=>el.onclick=()=>openItemDetail(el.dataset.detail, el.dataset.detailRev||''));   // 카드 본문 → 부품 상세
+  document.querySelectorAll('[data-tx]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); openTxSheet(b.dataset.tx, b.dataset.txRev||''); });  // ⇅ 입·출고 → 바텀시트
 }
 function invCard(it){
   const qty = Number(it.stock||0);
@@ -479,12 +488,13 @@ function invCard(it){
   const assy = isAssy(it.code, it.rev);
   const buildable = assy ? buildableOf(it.code, it.rev) : null;
   return `<div class="item-card">
-    <div class="item-head" ${assy?`data-assy="${esc(it.code)}" data-assy-rev="${esc(it.rev||'')}" style="cursor:pointer"`:'style="cursor:default"'}>
+    <div class="item-head" data-detail="${esc(it.code)}" data-detail-rev="${esc(it.rev||'')}" style="cursor:pointer">
       <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
         <div class="cd">${esc(skuOf(it.code,it.rev))} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}${it.location?' · 📍'+esc(it.location):''}${assy?` · 조립가능 ${fmt(buildable)}${esc(it.unit)}`:''}</div></div>
       <div class="qty"><b>${fmt(qty)}</b> <span>${esc(it.unit)}</span></div>
     </div>
-    ${it.safetyStock>0?`<div style="padding:0 14px 12px"><div class="bar-safety ${low?'low':''}"><i style="width:${pct}%"></i></div></div>`:''}
+    ${it.safetyStock>0?`<div style="padding:0 14px 10px"><div class="bar-safety ${low?'low':''}"><i style="width:${pct}%"></i></div></div>`:''}
+    <div class="item-actions"><button class="btn btn-ghost btn-sm" data-tx="${esc(it.code)}" data-tx-rev="${esc(it.rev||'')}">⇅ 입·출고</button></div>
   </div>`;
 }
 
