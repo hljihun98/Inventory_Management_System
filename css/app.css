@@ -385,3 +385,35 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 .grp-meta{display:flex;align-items:center;gap:6px}
 .grp-caret{color:var(--t3);font-size:12px;width:14px;text-align:center}
 .grp-body{padding-top:10px}
+
+/* =========================================================
+   다크 모드 — 디자인 토큰만 재매핑 (JS/클래스 구조 변화 없음)
+   토글: 헤더 🌙/☀️ 버튼 · 저장: localStorage(ims_theme) · 기본: OS 설정 따름
+========================================================= */
+:root[data-theme="dark"]{
+  --bg:#0E1117; --sf:#161C28; --s2:#1B2230; --s3:#232C3E;
+  --bd:#2A3446; --bd2:#3A465F;
+  --tx:#E7EAF3; --t2:#9AA5BE; --t3:#6C7690;
+  --ac:#5B78FF; --acl:#1E2540; --ac-hover:#7089FF;
+  --re:#F87171; --rel:#3A1E1F; --re-dark:#FCA5A5;
+  --am:#FBBF24; --aml:#372C13; --am-dark:#FCD34D;
+  --gn:#34D399; --gnl:#12312A; --gn-dark:#6EE7B7;
+  --sh:0 1px 3px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.3);
+  --sh2:0 4px 20px rgba(0,0,0,.45),0 1px 4px rgba(0,0,0,.35);
+  /* 레거시 시맨틱 변수 */
+  --ink:#E7EAF3; --ink-soft:#9AA5BE; --paper:#0E1117; --panel:#161C28; --line:#2A3446;
+  --tag:#FBBF24; --in:#34D399; --out:#F87171; --move:#5B78FF; --warn:#FCD34D;
+}
+/* 반투명 헤더/탭바 — 밝은 유리 배경을 어둡게 */
+:root[data-theme="dark"] header.app{background:rgba(18,23,33,.86);border-bottom-color:var(--bd)}
+:root[data-theme="dark"] nav.tabs{background:rgba(18,23,33,.94);border-top-color:var(--bd)}
+/* 포커스 시 흰 배경으로 튀던 입력칸 보정 */
+:root[data-theme="dark"] .field input:focus,
+:root[data-theme="dark"] .searchbar input:focus{background:var(--s3)}
+/* 라이트 전용 하드코딩 테두리 보정 */
+:root[data-theme="dark"] .btn-danger{border-color:#5A2A2A}
+:root[data-theme="dark"] .btn-danger:hover{background:#4A2222}
+:root[data-theme="dark"] .first-run{border-color:#4A3A18}
+:root[data-theme="dark"] #themeBtn{border:1px solid var(--bd2);border-radius:8px;padding:6px 9px;font-size:13px;background:var(--sf);line-height:1}
+#themeBtn{border:1px solid var(--bd2);border-radius:8px;padding:6px 9px;font-size:13px;background:var(--sf);line-height:1}
+#themeBtn:hover{border-color:var(--ac);background:var(--acl)}

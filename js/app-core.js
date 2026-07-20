@@ -62,6 +62,22 @@ async function sha256(str){
 function remember(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 function recall(k){ try{ return localStorage.getItem(k)||''; }catch(e){ return ''; } }
 
+/* ---------- 다크/라이트 테마 ---------- */
+function applyTheme(mode){
+  document.documentElement.setAttribute('data-theme', mode);
+  const b = $('#themeBtn'); if(b) b.textContent = mode==='dark' ? '☀️' : '🌙';
+}
+function initTheme(){
+  // 저장된 선택 우선, 없으면 OS 설정 따름
+  const saved = recall('ims_theme');
+  const mode = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  applyTheme(mode);
+}
+function toggleTheme(){
+  const next = document.documentElement.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+  applyTheme(next); remember('ims_theme', next);
+}
+
 /* 사진/문서를 서버 업로드용 payload로 변환 — 이미지는 최대 1280px, JPEG 72%로 압축해 전송량을 줄임 */
 async function fileToPayload(file){
   const isImage = file.type.startsWith('image/');
@@ -103,6 +119,42 @@ function applySnapshot(d){
   S.bom = d.bom||[];
 }
 async function loadAll(){ try{ await api('all'); S.loaded=true; }catch(e){ toast(e.message,'err'); } }
+
+/* ---------- CSV 내보내기 (엑셀에서 바로 열림) ---------- */
+function toCSV(headers, rows){
+  const c = v => { const s = String(v??''); return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  return [headers.map(c).join(','), ...rows.map(r=>r.map(c).join(','))].join('\r\n');
+}
+function downloadCSV(filename, headers, rows){
+  const csv = '﻿' + toCSV(headers, rows);   // UTF-8 BOM → 엑셀에서 한글 안 깨짐
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function exportInvCSV(){
+  if(!S.items.length) return toast('내보낼 품번이 없습니다','err');
+  const rows = S.items.slice()
+    .sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev)))
+    .map(i=>{ const low = i.safetyStock>0 && Number(i.stock||0)<i.safetyStock;
+      return [i.code, i.rev||'', i.name||'', groupNameOf(i.code), i.unit||'', Number(i.stock||0), Number(i.safetyStock||0), low?'미달':'', i.location||'']; });
+  downloadCSV(`재고현황_${today()}.csv`, ['품번','리비전','품명','제품군','단위','현재고','안전재고','안전재고상태','보관위치'], rows);
+  toast('재고 현황 CSV를 내려받았습니다','ok');
+}
+function exportHistCSV(){
+  const f = S.histFilter, q=(S._histQ||'').toLowerCase();
+  const rows = S.hist
+    .filter(h=>f==='ALL'||h.type===f)
+    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || (findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'').toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
+    .slice().reverse()
+    .map(h=>[ new Date(h.ts).toLocaleString('ko-KR'), TYPE_KO[h.type]||h.type, h.itemCode, h.rev||'',
+      findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'', Number(h.qty||0),
+      histHasBA(h.type)?Number(h.before||0):'', histHasBA(h.type)?Number(h.after||0):'', h.location||'', h.user||'', h.reason||'' ]);
+  if(!rows.length) return toast('내보낼 이력이 없습니다','err');
+  downloadCSV(`입출고이력_${today()}.csv`, ['일시','유형','품번','리비전','품명','수량','변경전','변경후','위치','담당자','사유'], rows);
+  toast(`이력 ${fmt(rows.length)}건 CSV를 내려받았습니다`,'ok');
+}
 
 /* 버튼 로딩 상태 헬퍼 */
 async function busy(btn, fn){
@@ -312,10 +364,12 @@ function renderInv(){
 
   $('#main').innerHTML = `
     <div class="sec-title">📦 재고 현황 <small>품번 ${S.items.length} · 구글시트 실시간</small></div>
-    <div class="searchbar"><input id="invQ" placeholder="품명 / 품번 / 리비전 검색" value="${esc(S._invQ||'')}"></div>
+    <div class="searchbar"><input id="invQ" placeholder="품명 / 품번 / 리비전 검색" value="${esc(S._invQ||'')}">
+      <button class="btn btn-ghost btn-sm" id="invCsv" title="현재 재고를 CSV로 내보내기">⬇ CSV</button></div>
     ${chips}
     ${sections}`;
   $('#invQ').oninput = e=>{ S._invQ = e.target.value; renderInv(); const v=$('#invQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
+  $('#invCsv').onclick = exportInvCSV;
   document.querySelectorAll('[data-grp]').forEach(b=>b.onclick=()=>{ S._invGroup=b.dataset.grp; renderInv(); });
   document.querySelectorAll('[data-gtoggle]').forEach(b=>b.onclick=()=>{ const g=b.dataset.gtoggle; S._invCollapsed.has(g)?S._invCollapsed.delete(g):S._invCollapsed.add(g); renderInv(); });
   document.querySelectorAll('[data-assy]').forEach(el=>el.onclick=()=>openAssyDetail(el.dataset.assy, el.dataset.assyRev||''));   // 조립품 카드 → 상세/조립
@@ -376,11 +430,11 @@ function renderLoc(){
 /* =========================================================
    이력
 ========================================================= */
-const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', CREATE:'생성', BUILD:'조립', CONSUME:'조립소요', UNBUILD:'분해', RESTORE:'분해복원' };
+const TYPE_KO = { IN:'입고', OUT:'출고', MOVE:'이동', ADJUST:'조정', CREATE:'생성', BUILD:'조립', CONSUME:'조립소요', UNBUILD:'분해', RESTORE:'분해복원' };
 const HIST_POS = ['IN','BUILD','RESTORE'];   // + 부호(재고 증가)
 const HIST_NEG = ['OUT','CONSUME','UNBUILD']; // − 부호(재고 감소)
-const histHasBA = t => HIST_POS.includes(t) || HIST_NEG.includes(t);           // before→after 있는 유형
-const histChipCls = t => HIST_POS.includes(t)?'in':HIST_NEG.includes(t)?'out':t==='MOVE'?'move':'gray';
+const histHasBA = t => HIST_POS.includes(t) || HIST_NEG.includes(t) || t==='ADJUST';  // before→after 있는 유형
+const histChipCls = t => HIST_POS.includes(t)?'in':HIST_NEG.includes(t)?'out':t==='MOVE'?'move':t==='ADJUST'?'warn':'gray';
 function renderHist(){
   const f = S.histFilter;
   const q = (S._histQ||'').toLowerCase();
@@ -391,7 +445,8 @@ function renderHist(){
   $('#main').innerHTML = `
     <div class="sec-title">🧾 입·출고 이력 <small>전수 ${fmt(S.histTotal)}건 (최근 500건 표시 · 전체는 구글시트 History 탭)</small></div>
     <div class="searchbar"><input id="histQ" placeholder="품번/품명/담당자 검색" value="${esc(S._histQ||'')}">
-      <select id="histF">${['ALL','IN','OUT','BUILD','CONSUME','UNBUILD','RESTORE'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select></div>
+      <select id="histF">${['ALL','IN','OUT','MOVE','ADJUST','BUILD','CONSUME','UNBUILD','RESTORE'].map(t=>`<option value="${t}" ${f===t?'selected':''}>${t==='ALL'?'전체':TYPE_KO[t]}</option>`).join('')}</select>
+      <button class="btn btn-ghost btn-sm" id="histCsv" title="현재 필터 결과를 CSV로 내보내기">⬇ CSV</button></div>
     <div class="card">${rows.length?rows.map(h=>`
       <div class="hist-line">
         <div class="when">${new Date(h.ts).toLocaleDateString('ko-KR',{month:'2-digit',day:'2-digit'})}<br>${new Date(h.ts).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}</div>
@@ -401,9 +456,10 @@ function renderHist(){
           <div class="muted">${esc(findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'')} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
           ${histHasBA(h.type)?` · 재고 ${fmt(h.before)}→${fmt(h.after)}`:''}</div>
         </div>
-        ${HIST_POS.includes(h.type)?`<div class="q in">+${fmt(h.qty)}</div>`:HIST_NEG.includes(h.type)?`<div class="q out">−${fmt(h.qty)}</div>`:''}
+        ${HIST_POS.includes(h.type)?`<div class="q in">+${fmt(h.qty)}</div>`:HIST_NEG.includes(h.type)?`<div class="q out">−${fmt(h.qty)}</div>`:h.type==='ADJUST'?`<div class="q ${h.after>=h.before?'in':'out'}">${h.after>=h.before?'+':'−'}${fmt(Math.abs(h.after-h.before))}</div>`:''}
       </div>`).join(''):'<div class="empty"><b>이력이 없습니다</b>입·출고를 처리하면 여기에 기록됩니다.</div>'}
     </div>`;
   $('#histF').onchange = e=>{ S.histFilter = e.target.value; renderHist(); };
+  $('#histCsv').onclick = exportHistCSV;
   $('#histQ').oninput = e=>{ S._histQ = e.target.value; renderHist(); const v=$('#histQ'); v.focus(); v.setSelectionRange(v.value.length,v.value.length); };
 }

@@ -378,15 +378,52 @@ function snapshot_() {
    itemsTable 을 공유해 같은 배치 안에서 in-memory 재고를 이어서 반영한다.
    재고 식별 = 품번(item_code)+리비전(rev). Items 컬럼: item_code(1)·rev(2)·name(3)·unit(4)·safety_stock(5)·stock(6)·location(7) */
 function applyTx_(user, p, itemsTable) {
-  var type = p.type, qty = Math.floor(Number(p.qty) || 0);
-  if (['IN', 'OUT'].indexOf(type) < 0) throw new Error('잘못된 처리 유형');
-  if (qty < 1) throw new Error('수량은 1 이상이어야 합니다');
+  var type = p.type;
+  if (['IN', 'OUT', 'MOVE', 'ADJUST'].indexOf(type) < 0) throw new Error('잘못된 처리 유형');
 
   var code = String(p.code || '').toUpperCase(), rev = String(p.rev || '').toUpperCase();
   var item = findItem_(itemsTable.rows, code, rev);
   if (!item) throw new Error('등록되지 않은 품번/리비전: ' + (p.code || '') + (rev ? ' (' + rev + ')' : ''));
 
   var before = Number(item.stock) || 0, after = before, loc = String(item.location || '');
+
+  // ----- 위치 이동: 재고 수량은 그대로, 보관 위치만 변경 -----
+  if (type === 'MOVE') {
+    var toLoc = String(p.loc || '');
+    if (!toLoc) throw new Error('이동할 위치를 선택하세요');
+    if (toLoc === loc) throw new Error('현재 위치와 동일한 위치입니다');
+    var fromLoc = loc || '(미지정)';
+    loc = toLoc;
+    itemsTable.sheet.getRange(item._row, 7).setValue(loc);          // location 만 변경
+    item.location = loc;
+    var moveReason = '📍 ' + fromLoc + ' → ' + toLoc + (p.reason ? ' | ' + p.reason : '');
+    appendRow_('History', {
+      tx_id: uid_(), ts: Date.now(), type: 'MOVE', item_code: item.item_code, rev: item.rev || '',
+      qty: before, before: before, after: before, location: loc, reason: moveReason, user: user.name
+    });
+    return { ok: true, type: 'MOVE', qty: before, before: before, after: before, code: item.item_code, rev: item.rev || '', from: fromLoc, to: toLoc };
+  }
+
+  // ----- 재고 실사 조정: 실물 카운트(절대 수량)로 재고를 맞추고 증감분을 기록 -----
+  if (type === 'ADJUST') {
+    var counted = Math.floor(Number(p.qty));
+    if (isNaN(counted) || counted < 0) throw new Error('실사 수량은 0 이상이어야 합니다');
+    after = counted;
+    var delta = after - before;
+    if (delta === 0) throw new Error('실사 수량이 현재고와 같습니다');
+    itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
+    item.stock = after;
+    var adjReason = '실사 조정 ' + (delta > 0 ? '+' : '') + delta + (p.reason ? ' | ' + p.reason : '');
+    appendRow_('History', {
+      tx_id: uid_(), ts: Date.now(), type: 'ADJUST', item_code: item.item_code, rev: item.rev || '',
+      qty: Math.abs(delta), before: before, after: after, location: loc, reason: adjReason, user: user.name
+    });
+    return { ok: true, type: 'ADJUST', qty: Math.abs(delta), delta: delta, before: before, after: after, code: item.item_code, rev: item.rev || '' };
+  }
+
+  // ----- 입고 / 출고 -----
+  var qty = Math.floor(Number(p.qty) || 0);
+  if (qty < 1) throw new Error('수량은 1 이상이어야 합니다');
   if (type === 'IN') { after = before + qty; if (p.loc) loc = p.loc; }
   else { if (before < qty) throw new Error('재고 부족: 현재고 ' + before); after = before - qty; }
 
@@ -417,6 +454,7 @@ function tx_(user, p) {
   var itemsTable = readTable_('Items');
   var r = applyTx_(user, p, itemsTable);
   if (r.type === 'OUT') notifyLowStockIfCrossed_(findItem_(itemsTable.rows, r.code, r.rev), r.qty);
+  else if (r.type === 'ADJUST' && r.delta < 0) notifyLowStockIfCrossed_(findItem_(itemsTable.rows, r.code, r.rev), -r.delta);
   rebuildReports_();
   return { ok: true, after: r.after, snapshot: snapshot_() };
 }

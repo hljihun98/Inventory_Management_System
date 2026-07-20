@@ -89,6 +89,10 @@ function drawScanPanel(){
   const it = findItem(tgt.code, tgt.rev);
   if(!it){ $('#scanPanel').innerHTML=''; return; }
   const st = S._inStatus || '정상';   // 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브)
+  const mode = S.scanMode;
+  const cur = Number(it.stock||0);
+  const modeBtn = { IN:'btn-in', OUT:'btn-out', MOVE:'btn-move', ADJUST:'btn-move' }[mode] || 'btn-primary';
+  const modeLabel = { IN:'입고 처리', OUT:'출고 처리', MOVE:'위치 이동', ADJUST:'재고 조정' }[mode] || '처리';
   $('#scanPanel').innerHTML = `
     <div class="lot-tag scan-hit">
       <div class="lot-no">${esc(skuOf(it.code,it.rev))}</div>
@@ -100,17 +104,27 @@ function drawScanPanel(){
       ${isAssy(it.code,it.rev)?`<button class="btn btn-ghost btn-sm" id="goAssyBtn">🔧 조립/분해</button>`:''}
     </div>
     <div class="card">
-      <div class="seg" style="margin-bottom:12px">
-        <button id="mIn"  class="${S.scanMode==='IN'?'on-in':''}">입고</button>
-        <button id="mOut" class="${S.scanMode==='OUT'?'on-out':''}">출고</button>
+      <div class="seg seg-compact" style="margin-bottom:12px">
+        <button id="mIn"     class="${mode==='IN'?'on-in':''}">입고</button>
+        <button id="mOut"    class="${mode==='OUT'?'on-out':''}">출고</button>
+        <button id="mMove"   class="${mode==='MOVE'?'on-move':''}">이동</button>
+        <button id="mAdjust" class="${mode==='ADJUST'?'on-warn':''}">조정</button>
       </div>
-      <div class="field"><label>수량</label>
-        <div class="big-qty"><button id="qMinus">−</button><input id="qVal" type="number" min="1" value="1" inputmode="numeric"><button id="qPlus">+</button></div></div>
-      ${S.scanMode==='IN'?`
+      ${mode!=='MOVE'?`
+      <div class="field"><label>${mode==='ADJUST'?'실사 수량 (실물 카운트)':'수량'}</label>
+        <div class="big-qty"><button id="qMinus">−</button><input id="qVal" type="number" min="${mode==='ADJUST'?0:1}" value="${mode==='ADJUST'?cur:1}" inputmode="numeric"><button id="qPlus">+</button></div>
+        ${mode==='ADJUST'?`<p class="muted" style="margin-top:6px">현재 시스템 재고 <b>${fmt(cur)}${esc(it.unit||'')}</b> · 실물 수량을 입력하면 차이만큼 조정됩니다</p>`:''}
+      </div>`:''}
+      ${mode==='IN'?`
         <div class="field"><label>보관 위치 (선택)</label>
           <select id="qLoc"><option value="">- 미지정 -</option>${S.locs.map(l=>`<option value="${esc(l.code)}" ${it.location===l.code?'selected':''}>${esc(l.code)} · ${esc(l.warehouse)} ${esc(l.zone)} ${esc(l.rack)}</option>`).join('')}</select></div>`:''}
-      <div class="field"><label>사유 (선택)</label><input id="qReason" value="${esc(S._inReason||'')}" placeholder="${S.scanMode==='IN'?'예: 정기 입고, 반품 입고':'예: 생산 투입, 판매 출고'}"></div>
-      ${S.scanMode==='IN'?`
+      ${mode==='MOVE'?`
+        <div class="field"><label>현재 위치</label><input value="${esc(it.location||'미지정')}" disabled style="opacity:.65"></div>
+        <div class="field"><label>이동할 위치</label>
+          <select id="qMoveLoc"><option value="">- 위치 선택 -</option>${S.locs.filter(l=>l.code!==it.location).map(l=>`<option value="${esc(l.code)}">${esc(l.code)} · ${esc(l.warehouse)} ${esc(l.zone)} ${esc(l.rack)}</option>`).join('')}</select>
+          ${S.locs.length?'':'<p class="muted" style="margin-top:6px">등록된 위치가 없습니다. 관리 → 위치에서 먼저 등록하세요.</p>'}</div>`:''}
+      <div class="field"><label>사유 (선택)</label><input id="qReason" value="${esc(S._inReason||'')}" placeholder="${mode==='IN'?'예: 정기 입고, 반품 입고':mode==='OUT'?'예: 생산 투입, 판매 출고':mode==='MOVE'?'예: 랙 재배치':'예: 정기 실사, 파손 폐기'}"></div>
+      ${mode==='IN'?`
         <div class="field"><label>품질 이상 여부</label>
           <div class="seg" id="qStatusSeg">
             <button type="button" data-st="정상" class="${st==='정상'?'on-in':''}">✅ 정상</button>
@@ -129,15 +143,15 @@ function drawScanPanel(){
             ${(S._inPhotos||[]).length<6?`<label class="pa"><span style="font-size:20px">📷</span><span>추가</span><input type="file" id="inPhotoFile" accept="image/*" capture="environment" multiple hidden></label>`:''}
           </div></div>
       `:''}
-      <button class="btn ${S.scanMode==='IN'?'btn-in':'btn-out'}" style="width:100%" id="qGo">
-        ${S.scanMode==='IN'?'입고 처리':'출고 처리'}</button>
+      <button class="btn ${modeBtn}" style="width:100%" id="qGo">${modeLabel}</button>
     </div>`;
-  ['In','Out'].forEach(m=>{ $('#m'+m).onclick=()=>{ S.scanMode=m.toUpperCase(); drawScanPanel(); }; });
+  [['mIn','IN'],['mOut','OUT'],['mMove','MOVE'],['mAdjust','ADJUST']].forEach(([id,m])=>{ const b=$('#'+id); if(b) b.onclick=()=>{ S.scanMode=m; drawScanPanel(); }; });
   $('#goDocBtn').onclick = ()=>{ S._docCode = it.code; S._docRev = it.rev||''; go('doc'); };
   $('#goIssueBtn').onclick = ()=>{ S._isCode = it.code; S._isRev = it.rev||''; S._issueTab = 'new'; go('issue'); };
   { const b=$('#goAssyBtn'); if(b) b.onclick=()=>openAssyDetail(it.code, it.rev||''); }
-  $('#qMinus').onclick=()=>{ const i=$('#qVal'); i.value=Math.max(1,Number(i.value)-1); };
-  $('#qPlus').onclick =()=>{ const i=$('#qVal'); i.value=Number(i.value)+1; };
+  { const qm=$('#qMinus'), qp=$('#qPlus'), floor=mode==='ADJUST'?0:1;
+    if(qm) qm.onclick=()=>{ const i=$('#qVal'); i.value=Math.max(floor,Number(i.value)-1); };
+    if(qp) qp.onclick =()=>{ const i=$('#qVal'); i.value=Number(i.value)+1; }; }
   const qr=$('#qReason'); if(qr) qr.oninput=()=>{ S._inReason=qr.value; };   // 재렌더에도 사유 보존
   if(S.scanMode==='IN'){
     document.querySelectorAll('#qStatusSeg [data-st]').forEach(b=>b.onclick=()=>{
@@ -160,9 +174,40 @@ function drawScanPanel(){
 }
 async function processTx(code, rev){
   const mode = S.scanMode;
+  let reason = ($('#qReason')?.value||'').trim();
+
+  // ── 위치 이동 (수량 변화 없음, 보관 위치만 변경) ──
+  if(mode==='MOVE'){
+    const toLoc = $('#qMoveLoc').value;
+    if(!toLoc) return toast('이동할 위치를 선택하세요','err');
+    try{
+      await api('tx', { type:'MOVE', code, rev, loc:toLoc, reason });
+      if(navigator.vibrate) navigator.vibrate(30);
+      toast(`위치 이동 완료 → ${toLoc}`,'ok');
+      S._inReason=''; renderAlerts(); drawScanPanel();
+    }catch(e){ toast(e.message,'err'); }
+    return;
+  }
+  // ── 재고 실사 조정 (실물 카운트로 재고를 맞춤) ──
+  if(mode==='ADJUST'){
+    const counted = Math.floor(Number($('#qVal').value));
+    if(isNaN(counted)||counted<0) return toast('실사 수량은 0 이상이어야 합니다','err');
+    const curStock = Number(findItem(code,rev)?.stock||0);
+    if(counted===curStock) return toast('실사 수량이 현재고와 같습니다','err');
+    const diff = counted-curStock;
+    if(!confirm(`재고 실사 조정\n현재고 ${fmt(curStock)} → 실물 ${fmt(counted)} (${diff>=0?'+':''}${fmt(diff)})\n이대로 조정할까요?`)) return;
+    try{
+      const r = await api('tx', { type:'ADJUST', code, rev, qty:counted, reason });
+      if(navigator.vibrate) navigator.vibrate(30);
+      toast(`재고 조정 완료 (${diff>=0?'+':''}${fmt(diff)} · 현재고 ${fmt(r.after)})`,'ok');
+      S._inReason=''; renderAlerts(); drawScanPanel();
+    }catch(e){ toast(e.message,'err'); }
+    return;
+  }
+
+  // ── 입고 / 출고 ──
   const qty = Math.floor(Number($('#qVal').value)||0);
   const loc = mode==='IN' ? $('#qLoc').value : '';
-  let reason = $('#qReason').value.trim();
   if(qty<1) return toast('수량은 1 이상이어야 합니다','err');
 
   // ── 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브) ──
@@ -747,6 +792,8 @@ function admData(){
    초기화
 ========================================================= */
 (function init(){
+  initTheme();
+  $('#themeBtn').onclick = toggleTheme;
   $('#apiUrl').value = DEFAULT_API_URL || recall('ims_api');
   // 기본 서버 주소가 지정돼 있으면 로그인 화면에서 주소 입력칸을 숨긴다
   if(DEFAULT_API_URL){ const f = $('#apiUrl').closest('.field'); if(f) f.style.display='none'; }
