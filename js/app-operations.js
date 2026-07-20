@@ -252,7 +252,7 @@ function drawScanPanel(){
   [['mIn','IN'],['mOut','OUT'],['mMove','MOVE'],['mAdjust','ADJUST']].forEach(([id,m])=>{ const b=$('#'+id); if(b) b.onclick=()=>{ S.scanMode=m; drawScanPanel(); }; });
   $('#goDocBtn').onclick = ()=>{ S._docCode = it.code; S._docRev = it.rev||''; go('doc'); };
   $('#goIssueBtn').onclick = ()=>{ S._isCode = it.code; S._isRev = it.rev||''; S._issueTab = 'new'; go('issue'); };
-  { const b=$('#goAssyBtn'); if(b) b.onclick=()=>openAssyDetail(it.code, it.rev||''); }
+  { const b=$('#goAssyBtn'); if(b) b.onclick=()=>{ if(S.scanning) stopScan(true); openAssyDetail(it.code, it.rev||''); }; }   // 조립 모달 여는 동안 카메라 정지(배경 스캔이 대상 바꾸는 것 방지)
   { const qm=$('#qMinus'), qp=$('#qPlus'), floor=mode==='ADJUST'?0:1;
     if(qm) qm.onclick=()=>{ const i=$('#qVal'); i.value=Math.max(floor,Number(i.value)-1); };
     if(qp) qp.onclick =()=>{ const i=$('#qVal'); i.value=Number(i.value)+1; }; }

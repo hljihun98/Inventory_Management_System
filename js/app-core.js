@@ -152,7 +152,11 @@ async function loadAll(){ try{ await api('all'); S.loaded=true; }catch(e){ toast
 
 /* ---------- CSV 내보내기 (엑셀에서 바로 열림) ---------- */
 function toCSV(headers, rows){
-  const c = v => { const s = String(v??''); return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const c = v => {
+    let s = String(v??'');
+    if(/^[=+\-@\t\r]/.test(s)) s = "'" + s;                 // 수식 인젝션 방지(엑셀에서 =,+,-,@ 로 시작 시 수식 실행)
+    return /[",\n\r]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  };
   return [headers.map(c).join(','), ...rows.map(r=>r.map(c).join(','))].join('\r\n');
 }
 function downloadCSV(filename, headers, rows){
@@ -298,9 +302,14 @@ function doLogout(){
   stopScan();
   lockRelease();
   S.me = null; S.auth = null; S.loaded = false;
-  // 화면 상태 초기화 → 같은 페이지에서 다른 사용자가 로그인해도 이전 필터/펼침 상태가 남지 않음
+  // 화면·입력 상태 초기화 → 같은 기기에서 다른 사용자가 로그인해도 이전 상태(스캔 대상·사진·이상내용·초안)가 남지 않음
   S.tab='scan'; S._invInit=false; S._invCollapsed=null; S._invQ=''; S._invGroup='';
   S._histQ=''; S.histFilter='ALL'; S._locQ=''; S._maQ=''; S._fbF='ALL'; S._admTab='users';
+  S.scanTarget=null; S.scanMode='IN';
+  S._inStatus='정상'; S._inIssue=''; S._inReason=''; S._inMakeIssue=undefined; S._inPhotos=[];
+  S._docCode=''; S._docRev=''; S._isCode=''; S._isRev=''; S._issueTab='new';
+  S._bulkRows=null; S._assyView=null; S._assyQty=1; S._treeOpen=null;
+  S._prefillNewItemCode=null; S._prefillNewItemRev=null;
   $('#appView').classList.add('hidden');
   $('#loginView').classList.remove('hidden');
   $('#loginPw').value='';
@@ -458,6 +467,9 @@ function renderInv(){
   let items = S.items.filter(i=>!q || (i.name||'').toLowerCase().includes(q) || i.code.toLowerCase().includes(q) || String(i.rev||'').toLowerCase().includes(q));
   if(gf) items = items.filter(i=>groupCodeOf(i.code)===gf);
 
+  // 카드마다 S.bom/S.items 전체를 스캔하지 않도록 조립품 판별·조립가능 수량을 1회 인덱싱
+  const ctx = invBomContext();
+
   // 제품군별 그룹 섹션
   const groups = {};
   items.forEach(i=>{ const g=groupCodeOf(i.code); (groups[g]=groups[g]||[]).push(i); });
@@ -475,7 +487,7 @@ function renderInv(){
         <span class="grp-title">${esc(GROUP_NAMES[g]||g)} <span class="muted" style="font-family:var(--mono);font-weight:400">${esc(g)}</span></span>
         <span class="grp-meta">${lowN?`<span class="chip chip-warn">미달 ${lowN}</span>`:''}<span class="chip chip-gray">품번 ${arr.length}</span><span class="grp-caret">${collapsed?'▸':'▾'}</span></span>
       </button>
-      ${collapsed?'':`<div class="grp-body">${arr.map(invCard).join('')}</div>`}
+      ${collapsed?'':`<div class="grp-body">${arr.map(it=>invCard(it, ctx)).join('')}</div>`}
     </div>`;
   }).join('') : `<div class="empty"><b>표시할 품번이 없습니다</b>${S.items.length?'검색·필터를 조정하세요.':'AppSheet 동기화 또는 관리 탭에서 품번을 등록하세요.'}</div>`;
 
@@ -492,12 +504,27 @@ function renderInv(){
   document.querySelectorAll('[data-detail]').forEach(el=>el.onclick=()=>openItemDetail(el.dataset.detail, el.dataset.detailRev||''));   // 카드 본문 → 부품 상세
   document.querySelectorAll('[data-tx]').forEach(b=>b.onclick=e=>{ e.stopPropagation(); openTxSheet(b.dataset.tx, b.dataset.txRev||''); });  // ⇅ 입·출고 → 바텀시트
 }
-function invCard(it){
+/* 재고현황 렌더용 인덱스 1회 구성 — 조립품 판별(assySet)·구성품맵·재고맵 → 카드마다 전체 스캔 방지.
+   ctx.buildable(code,rev): 조립 가능 수량(자식 없으면 null). */
+function invBomContext(){
+  const assySet = new Set(), children = new Map(), stock = new Map();
+  S.items.forEach(i=>stock.set(bomKey(i.code,i.rev), Number(i.stock||0)));
+  S.bom.forEach(e=>{ const k=bomKey(e.parentCode,e.parentRev); assySet.add(k); (children.get(k)||children.set(k,[]).get(k)).push(e); });
+  return {
+    assySet,
+    buildable(code,rev){
+      const kids = children.get(bomKey(code,rev));
+      if(!kids || !kids.length) return null;
+      return kids.reduce((m,e)=>{ const have=stock.get(bomKey(e.childCode,e.childRev))||0, per=Number(e.qtyPer)||0; return Math.min(m, per>0?Math.floor(have/per):0); }, Infinity);
+    }
+  };
+}
+function invCard(it, ctx){
   const qty = Number(it.stock||0);
   const low = it.safetyStock>0 && qty < it.safetyStock;
   const pct = it.safetyStock>0 ? Math.min(100, qty/it.safetyStock*100) : 100;
-  const assy = isAssy(it.code, it.rev);
-  const buildable = assy ? buildableOf(it.code, it.rev) : null;
+  const assy = ctx ? ctx.assySet.has(bomKey(it.code,it.rev)) : isAssy(it.code, it.rev);
+  const buildable = assy ? (ctx ? ctx.buildable(it.code, it.rev) : buildableOf(it.code, it.rev)) : null;
   return `<div class="item-card">
     <div class="item-head" data-detail="${esc(it.code)}" data-detail-rev="${esc(it.rev||'')}" style="cursor:pointer">
       <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>

@@ -187,7 +187,7 @@ function logError_(ref, req, message, stack) {
   var action = '', user = '';
   try { action = req && req.action ? String(req.action) : ''; } catch (e1) {}
   try { user = req && req.auth && req.auth.id ? String(req.auth.id) : ''; } catch (e2) {}
-  sh.appendRow([ref, Date.now(), new Date().toISOString(), action, user, String(message || '').slice(0, 500), String(stack || '').slice(0, 1000)]);
+  sh.appendRow([ref, Date.now(), new Date().toISOString(), action, user, String(message || '').slice(0, 500), String(stack || '').slice(0, 1000)].map(sanitizeCell_));
 }
 
 /* ============ 라우팅 ============ */
@@ -368,9 +368,14 @@ function normalize_(v) {
   if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   return v;
 }
+/* 시트 수식 인젝션 방지: '=','+','-','@'(및 탭/CR)로 시작하는 문자열 앞에 작은따옴표를 붙여 텍스트로 저장.
+   숫자 등 비문자열은 그대로. (선행 작은따옴표는 Sheets의 텍스트 표시자 → 표시·조회 시 값만 노출) */
+function sanitizeCell_(v) {
+  return (typeof v === 'string' && /^[=+\-@\t\r]/.test(v)) ? "'" + v : v;
+}
 function appendRow_(name, obj) {
   var head = SHEET_HEADERS[name];
-  sheet_(name).appendRow(head.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; }));
+  sheet_(name).appendRow(head.map(function (h) { return sanitizeCell_(obj[h] !== undefined ? obj[h] : ''); }));
 }
 function delRow_(table, keyCol, keyVal, forbidMsg) {
   if (forbidMsg) throw new Error(forbidMsg);
@@ -435,7 +440,13 @@ function snapshot_() {
 /* 단일 처리를 적용(검증·재고 증감·이력) — tx_ 와 bulkTx_ 가 공유.
    itemsTable 을 공유해 같은 배치 안에서 in-memory 재고를 이어서 반영한다.
    재고 식별 = 품번(item_code)+리비전(rev). Items 컬럼: item_code(1)·rev(2)·name(3)·unit(4)·safety_stock(5)·stock(6)·location(7) */
-function applyTx_(user, p, itemsTable) {
+/* histSink 가 있으면 "배치 모드": 시트 쓰기를 미루고(호출부가 1회 flush) 이력 행을 배열로 histSink 에 push,
+   재고는 in-memory item 객체만 갱신. 없으면 "단건 모드": 기존처럼 즉시 시트에 반영.
+   ★ 모든 throw 는 어떤 변경(in-memory/시트)보다 먼저 발생하므로, 실패 행은 상태를 전혀 건드리지 않음(부분성공 안전). */
+function applyTx_(user, p, itemsTable, histSink) {
+  var batch = !!histSink;
+  function recordHistory(h) { if (batch) histSink.push(h); else appendHistoryRows_([h]); }
+
   var type = p.type;
   if (['IN', 'OUT', 'MOVE', 'ADJUST'].indexOf(type) < 0) throw new Error('잘못된 처리 유형');
 
@@ -452,13 +463,10 @@ function applyTx_(user, p, itemsTable) {
     if (toLoc === loc) throw new Error('현재 위치와 동일한 위치입니다');
     var fromLoc = loc || '(미지정)';
     loc = toLoc;
-    itemsTable.sheet.getRange(item._row, 7).setValue(loc);          // location 만 변경
+    if (!batch) itemsTable.sheet.getRange(item._row, 7).setValue(loc);   // location 만 변경(배치는 호출부가 일괄 flush)
     item.location = loc;
     var moveReason = '📍 ' + fromLoc + ' → ' + toLoc + (p.reason ? ' | ' + p.reason : '');
-    appendRow_('History', {
-      tx_id: uid_(), ts: Date.now(), type: 'MOVE', item_code: item.item_code, rev: item.rev || '',
-      qty: before, before: before, after: before, location: loc, reason: moveReason, user: user.name
-    });
+    recordHistory([uid_(), Date.now(), 'MOVE', item.item_code, item.rev || '', before, before, before, loc, moveReason, user.name]);
     return { ok: true, type: 'MOVE', qty: before, before: before, after: before, code: item.item_code, rev: item.rev || '', from: fromLoc, to: toLoc };
   }
 
@@ -469,13 +477,10 @@ function applyTx_(user, p, itemsTable) {
     after = counted;
     var delta = after - before;
     if (delta === 0) throw new Error('실사 수량이 현재고와 같습니다');
-    itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
+    if (!batch) itemsTable.sheet.getRange(item._row, 6).setValue(after);   // stock
     item.stock = after;
     var adjReason = '실사 조정 ' + (delta > 0 ? '+' : '') + delta + (p.reason ? ' | ' + p.reason : '');
-    appendRow_('History', {
-      tx_id: uid_(), ts: Date.now(), type: 'ADJUST', item_code: item.item_code, rev: item.rev || '',
-      qty: Math.abs(delta), before: before, after: after, location: loc, reason: adjReason, user: user.name
-    });
+    recordHistory([uid_(), Date.now(), 'ADJUST', item.item_code, item.rev || '', Math.abs(delta), before, after, loc, adjReason, user.name]);
     return { ok: true, type: 'ADJUST', qty: Math.abs(delta), delta: delta, before: before, after: after, code: item.item_code, rev: item.rev || '' };
   }
 
@@ -485,14 +490,13 @@ function applyTx_(user, p, itemsTable) {
   if (type === 'IN') { after = before + qty; if (p.loc) loc = p.loc; }
   else { if (before < qty) throw new Error('재고 부족: 현재고 ' + before); after = before - qty; }
 
-  itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
-  if (type === 'IN' && p.loc) itemsTable.sheet.getRange(item._row, 7).setValue(loc);  // location
+  if (!batch) {
+    itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
+    if (type === 'IN' && p.loc) itemsTable.sheet.getRange(item._row, 7).setValue(loc);  // location
+  }
   item.stock = after; item.location = loc;                         // in-memory 갱신 → 배치 내 후속 행 반영
 
-  appendRow_('History', {
-    tx_id: uid_(), ts: Date.now(), type: type, item_code: item.item_code, rev: item.rev || '',
-    qty: qty, before: before, after: after, location: loc, reason: p.reason || '', user: user.name
-  });
+  recordHistory([uid_(), Date.now(), type, item.item_code, item.rev || '', qty, before, after, loc, p.reason || '', user.name]);
   return { ok: true, type: type, qty: qty, before: before, after: after, code: item.item_code, rev: item.rev || '' };
 }
 
@@ -524,16 +528,24 @@ function bulkTx_(user, p) {
   if (rows.length > 200) throw new Error('한 번에 최대 200건까지 처리할 수 있습니다');
 
   var itemsTable = readTable_('Items');
-  var results = [], outKeys = {};
+  var results = [], outKeys = {}, histRows = [], anyOk = false;
   rows.forEach(function (row, i) {
     try {
-      var r = applyTx_(user, row, itemsTable);
+      var r = applyTx_(user, row, itemsTable, histRows);   // 배치 모드: 시트 쓰기 미루고 histRows에 수집
+      anyOk = true;
       results.push({ idx: i, code: row.code, rev: row.rev, ok: true, type: r.type, qty: r.qty, after: r.after });
       if (r.type === 'OUT') { var k = r.code + '|' + (r.rev || ''); outKeys[k] = (outKeys[k] || 0) + r.qty; }
     } catch (err) {
       results.push({ idx: i, code: row.code, rev: row.rev, ok: false, error: String(err && err.message ? err.message : err) });
     }
   });
+
+  // 한 번에 flush: 재고(stock·location) 블록 1회 + 이력 append 1회 (N× 왕복 → 2회, 락 점유 단축)
+  if (anyOk) {
+    var n = itemsTable.rows.length;
+    itemsTable.sheet.getRange(2, 6, n, 2).setValues(itemsTable.rows.map(function (r) { return [r.stock, sanitizeCell_(r.location || '')]; }));
+    appendHistoryRows_(histRows);
+  }
 
   // 안전재고 미달 크로싱 알림 (배치 종료 후 품번+리비전별 1회, in-memory 재고 재사용)
   Object.keys(outKeys).forEach(function (k) {
@@ -1088,7 +1100,8 @@ function setBOMParent_(user, p) {
 function appendHistoryRows_(rows) {
   if (!rows.length) return;
   var sh = sheet_('History');
-  sh.getRange(sh.getLastRow() + 1, 1, rows.length, SHEET_HEADERS.History.length).setValues(rows);   // N× appendRow 대신 1회 배치 (락 점유 단축)
+  var safe = rows.map(function (r) { return r.map(sanitizeCell_); });   // 수식 인젝션 방지
+  sh.getRange(sh.getLastRow() + 1, 1, safe.length, SHEET_HEADERS.History.length).setValues(safe);   // N× appendRow 대신 1회 배치 (락 점유 단축)
 }
 /* 단계별 조립: 즉시 하위 구성품만 차감(qty_per×N), assy +N. 모든 자식 전량 검증 후에만 반영. */
 function assemble_(user, p) {
