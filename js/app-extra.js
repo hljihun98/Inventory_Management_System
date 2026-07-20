@@ -100,7 +100,10 @@ function drawIssueForm(){
   $('#issueBody').innerHTML = `
     <div class="card">
       <div class="field"><label>품번 (선택 — 품번과 무관한 신고는 비워두세요)</label>
-        <input id="isCode" placeholder="예: RP-303-013 (D)" value="${esc(S._isCode?skuOf(S._isCode,S._isRev):'')}" style="text-transform:uppercase"></div>
+        <div class="row" style="gap:8px;align-items:stretch">
+          <input id="isCode" placeholder="예: RP-303-013 (D)" value="${esc(S._isCode?skuOf(S._isCode,S._isRev):'')}" style="text-transform:uppercase;flex:1">
+          <button type="button" id="isScanBtn" class="scan-icon-btn" title="바코드 스캔" aria-label="바코드 스캔">${BARCODE_SVG}</button>
+        </div></div>
       <div id="isCodeInfo"></div>
       <div class="field"><label>심각도</label>
         <div class="sev-seg">${['경미','중대','긴급'].map(s=>`<button data-sev="${s}" class="sev-${s} ${S._issueSev===s?'on':''}">${s}</button>`).join('')}</div></div>
@@ -119,6 +122,11 @@ function drawIssueForm(){
       : `<p class="muted" style="margin:-6px 0 10px;color:var(--out)">${r0.ambiguous?'리비전이 여러 개입니다 — 리비전까지 입력하세요':'일치하는 품번을 찾을 수 없습니다'}</p>`;
   };
   $('#isCode').oninput = e=>{ showCodeInfo(e.target.value); };
+  $('#isScanBtn').onclick = ()=> openScanModal(txt=>{        // 바코드 촬영 → 품번칸 자동 채움 + 이름 표시
+    const p = parseScan(txt), v = skuOf(p.code, p.rev);
+    const el = $('#isCode'); if(el){ el.value = v; }
+    showCodeInfo(v);
+  });
   showCodeInfo(S._isCode?skuOf(S._isCode,S._isRev):'');
   let pending=null;
   $('#isDrop').onclick = ()=>$('#isFile').click();

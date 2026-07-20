@@ -24,12 +24,14 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt = n => Number(n||0).toLocaleString('ko-KR');
 const today = () => new Date().toISOString().slice(0,10);
+/* 바코드 아이콘(입력칸 옆 스캔 버튼용) */
+const BARCODE_SVG = '<svg viewBox="0 0 24 20" width="22" height="22" aria-hidden="true" fill="currentColor"><rect x="2" y="3" width="1.6" height="14"/><rect x="5" y="3" width="1" height="14"/><rect x="7.4" y="3" width="2.1" height="14"/><rect x="11" y="3" width="1" height="14"/><rect x="13.4" y="3" width="1.6" height="14"/><rect x="16.6" y="3" width="1" height="14"/><rect x="19" y="3" width="2.1" height="14"/></svg>';
 
 /* ---------- 품번 / 리비전 / 제품군 헬퍼 ----------
    식별 단위 = 품번(code) + 리비전(rev). 바코드 = "품번 (리비전)" 예) RP-303-013 (D)
    품번 = 제품군코드(RP)-블록코드(303)-시리얼(013). 제품군은 앞자리에서 도출. */
 const GROUP_NAMES = { RP:'PARKIE', RD:'DD-DRIVING', RG:'GOALIE', RZ:'COMMON PARTS', RQ:'QD-DRIVING', RS:'STANLEY' };
-const GROUP_ORDER = ['RP','RD','RG','RZ','RQ','RS'];
+const GROUP_ORDER = ['RP','RG','RZ','RD','RQ','RS'];   // 파키 → 골리 → 커먼 → 나머지(캐리는 미등록이라 제외)
 const groupCodeOf = code => String(code||'').split('-')[0].toUpperCase();
 const groupNameOf = code => GROUP_NAMES[groupCodeOf(code)] || '기타';
 const skuOf = (code, rev) => rev ? `${code} (${rev})` : String(code||'');
@@ -410,7 +412,7 @@ function renderAlerts(){
 
 /* ---------- 모달 (더보기 시트 등에서 사용) ---------- */
 function openModal(html){ $('#modalBox').innerHTML = html; $('#overlay').classList.remove('hidden'); }
-function closeModal(){ $('#overlay').classList.add('hidden'); $('#modalBox').innerHTML=''; if(S._lockModal){ S._lockModal=false; lockRelease(); } }   // 편집 모달을 닫으면 잠금 해제 (바깥 클릭 포함)
+function closeModal(){ if(typeof stopModalScan==='function') stopModalScan(); $('#overlay').classList.add('hidden'); $('#modalBox').innerHTML=''; if(S._lockModal){ S._lockModal=false; lockRelease(); } }   // 모달 닫으면 카메라 스캔 정지 + 편집 잠금 해제 (바깥 클릭 포함)
 document.addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
 
 /* =========================================================
@@ -426,6 +428,10 @@ function renderInv(){
   const stat = {};
   S.items.forEach(i=>{ const g=groupCodeOf(i.code); const s=stat[g]||(stat[g]={n:0,low:0}); s.n++; if(i.safetyStock>0&&Number(i.stock||0)<i.safetyStock) s.low++; });
   const statKeys = Object.keys(stat).sort((a,b)=>grpOrd(a)-grpOrd(b));
+  if(!S._invInit && statKeys.length){          // 첫 진입: 파키(RP)·커먼(RZ)만 펼치고 나머지는 접어둠
+    S._invInit = true;
+    S._invCollapsed = new Set(statKeys.filter(g=>g!=='RP' && g!=='RZ'));
+  }
   const chip = (val,label,n,low)=>`<button class="grp-chip ${gf===val?'on':''}" data-grp="${esc(val)}">${esc(label)}<span class="grp-n">${n}</span>${low?`<span class="grp-low">${low}</span>`:''}</button>`;
   const chips = `<div class="grp-chips">${chip('','전체',S.items.length,lowStockItems().length)}${statKeys.map(g=>chip(g,GROUP_NAMES[g]||g,stat[g].n,stat[g].low)).join('')}</div>`;
 
@@ -436,7 +442,11 @@ function renderInv(){
   // 제품군별 그룹 섹션
   const groups = {};
   items.forEach(i=>{ const g=groupCodeOf(i.code); (groups[g]=groups[g]||[]).push(i); });
-  const showKeys = Object.keys(groups).sort((a,b)=>grpOrd(a)-grpOrd(b));
+  const showKeys = Object.keys(groups).sort((a,b)=>{
+    const ca = S._invCollapsed.has(a)?1:0, cb = S._invCollapsed.has(b)?1:0;
+    if(ca!==cb) return ca-cb;                   // 펼쳐진 그룹을 위로, 접힌 그룹을 아래로
+    return grpOrd(a)-grpOrd(b);                 // 같은 상태끼리는 기본 순서(파키·골리·커먼…)
+  });
   const sections = showKeys.length ? showKeys.map(g=>{
     const arr = groups[g].slice().sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev)));
     const lowN = arr.filter(i=>i.safetyStock>0 && Number(i.stock||0)<i.safetyStock).length;

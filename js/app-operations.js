@@ -67,6 +67,38 @@ async function stopScan(rerender){
   S.scanning=false; S.scanner=null;
   if(rerender && S.tab==='scan' && $('#scanToggle')){ $('#scanToggle').textContent='카메라 스캔 시작'; $('#scanToggle').classList.replace('btn-danger','btn-primary'); }
 }
+
+/* =========================================================
+   공용 바코드 스캔 모달 — 어느 화면에서든 입력칸 옆 바코드 버튼으로 카메라 스캔.
+   onDetect(text): 인식된 바코드 문자열을 받아 처리(예: 품번 입력칸 채우기).
+   모달을 닫으면(취소·배경클릭·인식완료) closeModal → stopModalScan 으로 카메라가 확실히 정지된다.
+========================================================= */
+let _modalScanner = null;
+async function stopModalScan(){
+  if(_modalScanner){ const s=_modalScanner; _modalScanner=null; try{ await s.stop(); s.clear(); }catch(e){} }
+}
+async function openScanModal(onDetect){
+  openModal(`<h3>📷 바코드 스캔</h3>
+    <div id="scanModalReader" style="width:100%;min-height:240px;border-radius:12px;overflow:hidden;background:#000"></div>
+    <p class="muted" style="margin-top:10px">QR 또는 막대 바코드를 화면 안에 비추면 자동 인식됩니다.</p>
+    <div class="row" style="margin-top:12px"><button class="btn btn-ghost" id="scanModalCancel" style="width:100%">취소</button></div>`);
+  $('#scanModalCancel').onclick = async ()=>{ await stopModalScan(); closeModal(); };
+  initAudio();   // 버튼 클릭 제스처 안에서 오디오 활성화 → 인식음 재생 허용
+  try{
+    _modalScanner = new Html5Qrcode('scanModalReader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    const qrbox = (vw, vh) => { const w = Math.round(Math.min(vw*0.9, 440)); return { width:w, height:Math.round(Math.min(vh*0.7, w)) }; };
+    let handled=false;
+    await _modalScanner.start({ facingMode:'environment' }, { fps:15, qrbox }, async txt=>{
+      if(handled) return; handled=true;         // 첫 인식만 처리(연속 콜백 방지)
+      beep('ok'); if(navigator.vibrate) navigator.vibrate(30);
+      await stopModalScan(); closeModal();
+      onDetect(txt);
+    }, ()=>{});
+  }catch(e){
+    await stopModalScan(); closeModal();
+    toast('카메라를 열 수 없습니다. HTTPS 접속·카메라 권한을 확인하거나 직접 입력하세요','err');
+  }
+}
 async function onCode(raw, manual){
   const now = Date.now();                       // 중복 스캔 방지 (2.5초)
   if(!manual && raw===S.lastScan.code && now-S.lastScan.at<2500) return;
