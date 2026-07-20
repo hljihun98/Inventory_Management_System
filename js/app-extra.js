@@ -114,7 +114,8 @@ function drawIssueForm(){
       <img id="isPrev" class="thumb-prev hidden">
       <button class="btn btn-out" style="width:100%;margin-top:12px" id="isSubmit">신고 접수</button>
     </div>`;
-  document.querySelectorAll('[data-sev]').forEach(b=>b.onclick=()=>{ S._issueSev=b.dataset.sev; drawIssueForm(); });
+  document.querySelectorAll('[data-sev]').forEach(b=>b.onclick=()=>{ S._issueSev=b.dataset.sev;   // 재렌더 없이 활성 표시만 토글 → 입력한 제목·내용·사진 유지
+    document.querySelectorAll('[data-sev]').forEach(x=>x.classList.toggle('on', x.dataset.sev===S._issueSev)); });
   const showCodeInfo = v=>{
     const r0 = v.trim() ? resolveScan(v.trim()) : {item:null,ambiguous:false};
     $('#isCodeInfo').innerHTML = !v.trim() ? '' : r0.item
@@ -305,7 +306,7 @@ function drawReport(rep){
       ${gb.length ? gb.map(g=>`
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12.5px">
           <div style="width:118px;flex:none;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.name)} <span class="muted" style="font-family:var(--mono);font-weight:400">${esc(g.group)}</span></div>
-          <div style="flex:1;background:#EEF1F4;border-radius:5px;overflow:hidden;height:16px">
+          <div style="flex:1;background:var(--s3);border-radius:5px;overflow:hidden;height:16px">
             <div style="width:${Math.max(3,g.qty/maxGroupQty*100)}%;height:100%;background:var(--ac);border-radius:5px"></div>
           </div>
           <div style="width:120px;text-align:right;font-variant-numeric:tabular-nums">${fmt(g.qty)} <span class="muted">· 품번 ${g.items}${g.low?` · <span style="color:var(--out)">미달 ${g.low}</span>`:''}</span></div>
@@ -316,8 +317,8 @@ function drawReport(rep){
       ${top.length ? top.map(t=>`
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12.5px">
           <div style="width:96px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name)}${t.rev?` <span class="muted">(${esc(t.rev)})</span>`:''}</div>
-          <div style="flex:1;background:#EEF1F4;border-radius:5px;overflow:hidden;height:16px">
-            <div style="width:${Math.max(3,t.qty/maxQty*100)}%;height:100%;background:${t.safetyStock>0&&t.qty<t.safetyStock?'var(--out)':'var(--ink)'};border-radius:5px"></div>
+          <div style="flex:1;background:var(--s3);border-radius:5px;overflow:hidden;height:16px">
+            <div style="width:${Math.max(3,t.qty/maxQty*100)}%;height:100%;background:${t.safetyStock>0&&t.qty<t.safetyStock?'var(--out)':'var(--ac)'};border-radius:5px"></div>
           </div>
           <div style="width:56px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums">${fmt(t.qty)}${esc(t.unit)}</div>
         </div>`).join('') : '<div class="muted">데이터 없음</div>'}
@@ -325,7 +326,7 @@ function drawReport(rep){
     <div class="chart-card">
       <h4>최근 14일 입·출고 추이</h4>
       ${trendChart(rep.trend, maxTrend)}
-      <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:#7A8494"><span>🟩 입고</span><span>🟥 출고</span></div>
+      <div style="display:flex;gap:14px;margin-top:8px;font-size:11.5px;color:var(--t2)"><span>🟩 입고</span><span>🟥 출고</span></div>
     </div>
     ${bomSummaryCard()}
     <div class="looker-card">
@@ -361,7 +362,7 @@ function trendChart(trend, maxV){
           <div style="width:5px;height:${hIn}px;background:var(--in);border-radius:2px 2px 0 0"></div>
           <div style="width:5px;height:${hOut}px;background:var(--out);border-radius:2px 2px 0 0"></div>
         </div>
-        <div style="font-size:8px;color:#98A2B3">${esc(d.date.slice(5))}</div>
+        <div style="font-size:8px;color:var(--t3)">${esc(d.date.slice(5))}</div>
       </div>`;
     }).join('')}
   </div>`;

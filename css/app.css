@@ -159,7 +159,7 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 .kpi.bad::before{background:var(--re)}  .kpi.bad b{color:var(--re)}
 .chart-card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:15px;margin-bottom:12px;box-shadow:var(--sh)}
 .chart-card h4{font-size:13px;margin-bottom:11px;color:var(--t2);font-weight:600}
-.looker-card{background:var(--acl);border:1px solid #C7D2FE;border-radius:12px;padding:14px;font-size:13px;color:var(--ac-hover)}
+.looker-card{background:var(--acl);border:1px solid var(--bd2);border-radius:12px;padding:14px;font-size:13px;color:var(--ac-hover)}
 .looker-card a{color:var(--ac);font-weight:600}
 
 /* ---------- 공통 카드/섹션 ---------- */

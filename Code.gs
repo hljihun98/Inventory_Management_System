@@ -694,20 +694,21 @@ function reportData_() {
   });
   var groupBreakdown = Object.keys(byGroup).map(function (k) { return byGroup[k]; }).sort(function (a, b) { return b.qty - a.qty; });
 
-  // 최근 14일 입출고 추이
-  var days = [];
+  // 최근 14일 입출고 추이 — 이력을 1회만 순회하며 날짜별로 집계(행마다 formatDate 반복 X)
+  var tz = Session.getScriptTimeZone();
+  var days = [], agg = {};
   for (var i = 13; i >= 0; i--) {
     var d = new Date(); d.setDate(d.getDate() - i);
-    days.push(Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd'));
+    var ds = Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+    days.push(ds); agg[ds] = { date: ds, in: 0, out: 0 };
   }
-  var trend = days.map(function (ds) {
-    var dayIn = 0, dayOut = 0;
-    hist.forEach(function (h) {
-      var hd = Utilities.formatDate(new Date(Number(h.ts)), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-      if (hd === ds) { if (h.type === 'IN') dayIn += Number(h.qty) || 0; if (h.type === 'OUT') dayOut += Number(h.qty) || 0; }
-    });
-    return { date: ds, in: dayIn, out: dayOut };
+  hist.forEach(function (h) {
+    if (h.type !== 'IN' && h.type !== 'OUT') return;
+    var hd = Utilities.formatDate(new Date(Number(h.ts) || 0), tz, 'yyyy-MM-dd');
+    var a = agg[hd]; if (!a) return;                       // 최근 14일 밖은 무시
+    if (h.type === 'IN') a.in += Number(h.qty) || 0; else a.out += Number(h.qty) || 0;
   });
+  var trend = days.map(function (ds) { return agg[ds]; });
 
   return {
     stockByItem: stockByItem,

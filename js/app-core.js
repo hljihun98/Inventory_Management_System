@@ -174,12 +174,13 @@ function exportInvCSV(){
 }
 function exportHistCSV(){
   const f = S.histFilter, q=(S._histQ||'').toLowerCase();
+  const nameOf = histNameLookup();
   const rows = S.hist
     .filter(h=>f==='ALL'||h.type===f)
-    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || (findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'').toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
+    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || nameOf(h.itemCode,h.rev).toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
     .slice().reverse()
     .map(h=>[ new Date(h.ts).toLocaleString('ko-KR'), TYPE_KO[h.type]||h.type, h.itemCode, h.rev||'',
-      findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'', Number(h.qty||0),
+      nameOf(h.itemCode,h.rev), Number(h.qty||0),
       histHasBA(h.type)?Number(h.before||0):'', histHasBA(h.type)?Number(h.after||0):'', h.location||'', h.user||'', h.reason||'' ]);
   if(!rows.length) return toast('내보낼 이력이 없습니다','err');
   downloadCSV(`입출고이력_${today()}.csv`, ['일시','유형','품번','리비전','품명','수량','변경전','변경후','위치','담당자','사유'], rows);
@@ -229,6 +230,12 @@ const itemOf = code => S.items.find(i=>i.code===code);                          
 const findItem = (code, rev) => S.items.find(i=>i.code===code && String(i.rev||'')===String(rev||''));  // 정확 매칭
 const locOf  = code => S.locs.find(l=>l.code===code);
 function itemQty(code, rev){ return Number(findItem(code,rev)?.stock||0); }      // 재고는 (품번+리비전) 행에 직접 저장
+/* 품번(+리비전)→품명 조회 함수를 1회 구성해 반환. 이력 렌더/CSV에서 행마다 S.items를 스캔하지 않도록. */
+function histNameLookup(){
+  const m = new Map();
+  S.items.forEach(i=>{ m.set(i.code+'|'+String(i.rev||''), i.name||''); if(!m.has(i.code)) m.set(i.code, i.name||''); });
+  return (c,r)=> m.get(c+'|'+String(r||'')) || m.get(c) || '';
+}
 function lowStockItems(){ return S.items.filter(i=>i.safetyStock>0 && Number(i.stock||0) < i.safetyStock); }
 /* 같은 품번의 리비전 중 가장 최신(사전식·숫자 정렬상 최대) 반환. 없으면 ''. BOM 등록 시 Rev 자동 결정에 사용 */
 function latestRevOf(code){
@@ -291,6 +298,9 @@ function doLogout(){
   stopScan();
   lockRelease();
   S.me = null; S.auth = null; S.loaded = false;
+  // 화면 상태 초기화 → 같은 페이지에서 다른 사용자가 로그인해도 이전 필터/펼침 상태가 남지 않음
+  S.tab='scan'; S._invInit=false; S._invCollapsed=null; S._invQ=''; S._invGroup='';
+  S._histQ=''; S.histFilter='ALL'; S._locQ=''; S._maQ=''; S._fbF='ALL'; S._admTab='users';
   $('#appView').classList.add('hidden');
   $('#loginView').classList.remove('hidden');
   $('#loginPw').value='';
@@ -459,7 +469,7 @@ function renderInv(){
   const sections = showKeys.length ? showKeys.map(g=>{
     const arr = groups[g].slice().sort((a,b)=> a.code.localeCompare(b.code) || String(a.rev).localeCompare(String(b.rev)));
     const lowN = arr.filter(i=>i.safetyStock>0 && Number(i.stock||0)<i.safetyStock).length;
-    const collapsed = S._invCollapsed.has(g);
+    const collapsed = gf ? false : S._invCollapsed.has(g);   // 제품군 칩으로 필터 중이면 접힘 무시하고 펼쳐 보여줌
     return `<div class="grp-sec">
       <button class="grp-head" data-gtoggle="${esc(g)}">
         <span class="grp-title">${esc(GROUP_NAMES[g]||g)} <span class="muted" style="font-family:var(--mono);font-weight:400">${esc(g)}</span></span>
@@ -547,9 +557,10 @@ const histChipCls = t => HIST_POS.includes(t)?'in':HIST_NEG.includes(t)?'out':t=
 function renderHist(){
   const f = S.histFilter;
   const q = (S._histQ||'').toLowerCase();
+  const nameOf = histNameLookup();   // 품번→품명 조회 1회 구성(행마다 S.items 스캔 방지)
   const rows = S.hist
     .filter(h=>f==='ALL'||h.type===f)
-    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || (findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'').toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
+    .filter(h=>!q || (h.itemCode||'').toLowerCase().includes(q) || String(h.rev||'').toLowerCase().includes(q) || nameOf(h.itemCode,h.rev).toLowerCase().includes(q) || (h.user||'').toLowerCase().includes(q))
     .slice().reverse();
   $('#main').innerHTML = `
     <div class="sec-title">🧾 입·출고 이력 <small>전수 ${fmt(S.histTotal)}건 (최근 500건 표시 · 전체는 구글시트 History 탭)</small></div>
@@ -562,7 +573,7 @@ function renderHist(){
         <div class="what">
           <span class="chip chip-${histChipCls(h.type)}">${TYPE_KO[h.type]||h.type}</span>
           <span class="ln">${esc(skuOf(h.itemCode,h.rev))}</span>
-          <div class="muted">${esc(findItem(h.itemCode,h.rev)?.name||itemOf(h.itemCode)?.name||'')} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
+          <div class="muted">${esc(nameOf(h.itemCode,h.rev))} · ${esc(h.user)} ${h.location?'· 📍'+esc(h.location):''} ${h.reason?'· '+esc(h.reason):''}
           ${histHasBA(h.type)?` · 재고 ${fmt(h.before)}→${fmt(h.after)}`:''}</div>
         </div>
         ${HIST_POS.includes(h.type)?`<div class="q in">+${fmt(h.qty)}</div>`:HIST_NEG.includes(h.type)?`<div class="q out">−${fmt(h.qty)}</div>`:h.type==='ADJUST'?`<div class="q ${h.after>=h.before?'in':'out'}">${h.after>=h.before?'+':'−'}${fmt(Math.abs(h.after-h.before))}</div>`:''}

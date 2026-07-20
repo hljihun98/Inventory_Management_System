@@ -50,21 +50,23 @@ async function startScan(){
   try{
     initAudio();   // 사용자 제스처(버튼 클릭) 안에서 오디오 활성화 → 이후 인식음 재생 허용
     // 네이티브 BarcodeDetector 우선 사용(안드로이드/크롬에서 훨씬 빠름) · 아이폰 사파리는 미지원이라 JS 디코더로 자동 폴백
-    S.scanner = new Html5Qrcode('reader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    const inst = new Html5Qrcode('reader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    S.scanner = inst;
     // 스캔 영역을 뷰파인더 크기에 맞춰 크고 가로로 넓게(1D 바코드 인식률↑) · fps 상향으로 초당 인식 시도 증가
     const qrbox = (vw, vh) => { const w = Math.round(Math.min(vw*0.9, 440)); return { width:w, height:Math.round(Math.min(vh*0.7, w)) }; };
-    await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox },
+    await inst.start({ facingMode:'environment' }, { fps:15, qrbox },
       txt=>onCode(txt,false), ()=>{});
+    // 시작 도중 다른 탭 이동/중지로 이미 정리됐으면 이 인스턴스를 즉시 멈춰 카메라를 놓아준다(레이스 방지)
+    if(S.scanner !== inst || S.tab!=='scan'){ try{ await inst.stop(); inst.clear(); }catch(e){} return; }
     S.scanning = true;
     setupTapFocus('reader');   // 탭하여 초점 재조정(안드로이드 지원 · iOS는 무시)
-    $('#scanToggle').textContent='카메라 스캔 중지';
-    $('#scanToggle').classList.replace('btn-primary','btn-danger');
+    const btn=$('#scanToggle'); if(btn){ btn.textContent='카메라 스캔 중지'; btn.classList.replace('btn-primary','btn-danger'); }
   }catch(e){
     toast('카메라를 열 수 없습니다. HTTPS 접속 여부와 카메라 권한을 확인하거나 수동 입력을 사용하세요','err');
   }
 }
 async function stopScan(rerender){
-  if(S.scanner && S.scanning){ try{ await S.scanner.stop(); S.scanner.clear(); }catch(e){} }
+  if(S.scanner){ try{ await S.scanner.stop(); S.scanner.clear(); }catch(e){} }   // 시작 중이어도(=scanning 아직 false) 인스턴스가 있으면 정리
   S.scanning=false; S.scanner=null;
   if(rerender && S.tab==='scan' && $('#scanToggle')){ $('#scanToggle').textContent='카메라 스캔 시작'; $('#scanToggle').classList.replace('btn-danger','btn-primary'); }
 }
@@ -138,15 +140,18 @@ async function openScanModal(onDetect){
   $('#scanModalCancel').onclick = async ()=>{ await stopModalScan(); closeModal(); };
   initAudio();   // 버튼 클릭 제스처 안에서 오디오 활성화 → 인식음 재생 허용
   try{
-    _modalScanner = new Html5Qrcode('scanModalReader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    const inst = new Html5Qrcode('scanModalReader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    _modalScanner = inst;
     const qrbox = (vw, vh) => { const w = Math.round(Math.min(vw*0.9, 440)); return { width:w, height:Math.round(Math.min(vh*0.7, w)) }; };
     let handled=false;
-    await _modalScanner.start({ facingMode:'environment' }, { fps:15, qrbox }, async txt=>{
+    await inst.start({ facingMode:'environment' }, { fps:15, qrbox }, async txt=>{
       if(handled) return; handled=true;         // 첫 인식만 처리(연속 콜백 방지)
       beep('ok'); if(navigator.vibrate) navigator.vibrate(30);
       await stopModalScan(); closeModal();
       onDetect(txt);
     }, ()=>{});
+    // 시작 도중 모달이 닫혔으면(배경클릭/취소) 이 인스턴스를 즉시 멈춰 카메라를 놓아준다(레이스 방지)
+    if(_modalScanner !== inst){ try{ await inst.stop(); inst.clear(); }catch(e){} return; }
     setupTapFocus('scanModalReader');   // 탭하여 초점 재조정
   }catch(e){
     await stopModalScan(); closeModal();
