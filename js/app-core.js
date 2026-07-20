@@ -59,6 +59,28 @@ async function sha256(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
   return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
+
+/* ---------- 스캔 알림음 (Web Audio · 외부 음원 불필요, 오프라인 동작) ----------
+   브라우저 자동재생 정책상 오디오는 사용자 제스처 안에서 생성해야 소리가 남 →
+   '카메라 스캔 시작' 버튼 클릭(startScan) 시 initAudio() 로 미리 활성화한다. */
+let _actx = null;
+function initAudio(){
+  try{ _actx = _actx || new (window.AudioContext || window.webkitAudioContext)();
+    if(_actx.state==='suspended') _actx.resume(); }catch(e){}
+}
+function beep(kind){                       // kind: 'ok'(인식 성공, 높은 삑) · 'err'(미등록/실패, 낮은 삑)
+  try{
+    initAudio(); if(!_actx) return;
+    const t=_actx.currentTime, o=_actx.createOscillator(), g=_actx.createGain();
+    const long = kind==='err';
+    o.type='square'; o.frequency.value = long ? 240 : 920;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t+0.005);
+    g.gain.exponentialRampToValueAtTime(0.0001, t+(long?0.22:0.12));
+    o.connect(g); g.connect(_actx.destination);
+    o.start(t); o.stop(t+(long?0.24:0.14));
+  }catch(e){}
+}
 function remember(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
 function recall(k){ try{ return localStorage.getItem(k)||''; }catch(e){ return ''; } }
 

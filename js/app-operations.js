@@ -41,8 +41,12 @@ function renderScan(){
 }
 async function startScan(){
   try{
-    S.scanner = new Html5Qrcode('reader');
-    await S.scanner.start({ facingMode:'environment' }, { fps:10, qrbox:{width:230,height:230} },
+    initAudio();   // 사용자 제스처(버튼 클릭) 안에서 오디오 활성화 → 이후 인식음 재생 허용
+    // 네이티브 BarcodeDetector 우선 사용(지원 시 훨씬 빠름) · 미지원 브라우저는 자동으로 기존 디코더로 폴백
+    S.scanner = new Html5Qrcode('reader', { experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    // 스캔 영역을 뷰파인더 크기에 맞춰 크고 가로로 넓게(1D 바코드 인식률↑) · fps 상향으로 초당 인식 시도 증가
+    const qrbox = (vw, vh) => { const w = Math.round(Math.min(vw*0.9, 440)); return { width:w, height:Math.round(Math.min(vh*0.7, w)) }; };
+    await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox, aspectRatio:1.3333 },
       txt=>onCode(txt,false), ()=>{});
     S.scanning = true;
     $('#scanToggle').textContent='카메라 스캔 중지';
@@ -63,6 +67,7 @@ async function onCode(raw, manual){
   let r = resolveScan(raw);
   if(!r.item && !r.ambiguous){ await loadAll(); r = resolveScan(raw); }   // 없으면 시트 재조회
   if(r.item){
+    beep('ok');                                  // 인식 성공 삑
     if(navigator.vibrate) navigator.vibrate(30);
     S.scanTarget = { code:r.item.code, rev:r.item.rev||'' }; S.scanMode='IN';
     S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined;   // 새 스캔마다 품질 이상 여부 초기화
@@ -70,6 +75,7 @@ async function onCode(raw, manual){
     drawScanPanel();
     return;
   }
+  beep('err');                                   // 미등록/불명확 — 낮은 삑
   if(navigator.vibrate) navigator.vibrate(80);
   if(r.ambiguous){   // 품번은 있으나 리비전 여러 개 — 리비전 포함해 스캔/입력 유도
     return toast(`품번 ${r.code} 은 리비전이 여러 개입니다. 리비전까지 포함해 스캔하세요 (예: ${r.code} (D))`,'err');
