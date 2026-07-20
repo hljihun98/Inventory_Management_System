@@ -39,14 +39,21 @@ function renderScan(){
   $('#manualCode').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=e.target.value.trim(); if(v) onCode(v,true); e.target.select(); }});
   if(S.scanTarget) drawScanPanel();
 }
+/* QR + 주요 1D(막대) 포맷을 명시 지정 → 안드로이드(네이티브 디코더)·아이폰(JS 디코더) 양쪽에서
+   QR·막대 둘 다 확실히 인식. 라이브러리 미로드 등으로 enum이 없으면 undefined 반환(전체 포맷 기본값 사용). */
+function scanFormats(){
+  const F = window.Html5QrcodeSupportedFormats;
+  if(!F) return undefined;
+  return [F.QR_CODE, F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR];
+}
 async function startScan(){
   try{
     initAudio();   // 사용자 제스처(버튼 클릭) 안에서 오디오 활성화 → 이후 인식음 재생 허용
-    // 네이티브 BarcodeDetector 우선 사용(지원 시 훨씬 빠름) · 미지원 브라우저는 자동으로 기존 디코더로 폴백
-    S.scanner = new Html5Qrcode('reader', { experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
+    // 네이티브 BarcodeDetector 우선 사용(안드로이드/크롬에서 훨씬 빠름) · 아이폰 사파리는 미지원이라 JS 디코더로 자동 폴백
+    S.scanner = new Html5Qrcode('reader', { formatsToSupport: scanFormats(), experimentalFeatures:{ useBarCodeDetectorIfSupported:true }, verbose:false });
     // 스캔 영역을 뷰파인더 크기에 맞춰 크고 가로로 넓게(1D 바코드 인식률↑) · fps 상향으로 초당 인식 시도 증가
     const qrbox = (vw, vh) => { const w = Math.round(Math.min(vw*0.9, 440)); return { width:w, height:Math.round(Math.min(vh*0.7, w)) }; };
-    await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox, aspectRatio:1.3333 },
+    await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox },
       txt=>onCode(txt,false), ()=>{});
     S.scanning = true;
     $('#scanToggle').textContent='카메라 스캔 중지';
