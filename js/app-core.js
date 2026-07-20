@@ -90,10 +90,9 @@ function applyTheme(mode){
   const b = $('#themeBtn'); if(b) b.textContent = mode==='dark' ? '☀️' : '🌙';
 }
 function initTheme(){
-  // 저장된 선택 우선, 없으면 OS 설정 따름
+  // 사용자가 직접 토글해 저장한 값만 따르고, 저장 전(첫 진입)에는 항상 라이트 모드
   const saved = recall('ims_theme');
-  const mode = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  applyTheme(mode);
+  applyTheme(saved === 'dark' ? 'dark' : 'light');
 }
 function toggleTheme(){
   const next = document.documentElement.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
