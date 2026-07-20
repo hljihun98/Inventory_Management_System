@@ -6,7 +6,7 @@
 
 /* ▼▼▼ 배포 시 이 값을 본인의 Apps Script 웹앱 URL로 바꾸면
        로그인 화면에서 주소 입력 없이 바로 사용할 수 있습니다. ▼▼▼ */
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbynbfljY52UlLbB_DnIfj90iD-sHyphkiL9QoY5VHsdwZnlCbngF5ZtP4L6VgGKtTse/exec';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbw1UawH8t5uKcGiakXTju5XdqQ7dK0e5c6GVoOvniOKcv7wsWTyQFoFmRBIcDjchkj3/exec';
 /* 예: const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycb.../exec'; */
 
 /* ---------- 전역 상태 ---------- */
