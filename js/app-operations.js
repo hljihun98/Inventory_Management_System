@@ -24,7 +24,6 @@ function renderScan(){
     <div class="sec-title">📷 스캔 입·출고</div>
     <div class="card">
       <div id="reader"></div>
-      <p class="muted" id="focusHint" style="margin-top:6px;display:none">💡 흐릿하면 화면을 한 번 <b>탭</b>하세요 — 초점을 다시 잡습니다.</p>
       <div class="row" style="margin-top:10px">
         <button class="btn btn-primary" id="scanToggle">카메라 스캔 시작</button>
       </div>
@@ -57,8 +56,7 @@ async function startScan(){
     await S.scanner.start({ facingMode:'environment' }, { fps:15, qrbox },
       txt=>onCode(txt,false), ()=>{});
     S.scanning = true;
-    setupTapFocus('reader');   // 탭하여 초점 재조정
-    { const fh=$('#focusHint'); if(fh) fh.style.display='block'; }
+    setupTapFocus('reader');   // 탭하여 초점 재조정(안드로이드 지원 · iOS는 무시)
     $('#scanToggle').textContent='카메라 스캔 중지';
     $('#scanToggle').classList.replace('btn-primary','btn-danger');
   }catch(e){
@@ -68,7 +66,6 @@ async function startScan(){
 async function stopScan(rerender){
   if(S.scanner && S.scanning){ try{ await S.scanner.stop(); S.scanner.clear(); }catch(e){} }
   S.scanning=false; S.scanner=null;
-  { const fh=$('#focusHint'); if(fh) fh.style.display='none'; }
   if(rerender && S.tab==='scan' && $('#scanToggle')){ $('#scanToggle').textContent='카메라 스캔 시작'; $('#scanToggle').classList.replace('btn-danger','btn-primary'); }
 }
 
