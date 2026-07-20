@@ -433,81 +433,81 @@ function drawNotify(s){
 }
 
 /* =========================================================
-   관리 › 메모 (개발로그) — 개발 방향·결정사항·할 일·버그를 타임라인으로 기록
+   개선요청 · 오류신고 (더보기) — 사용자가 앱 수정요청/오류를 접수하는 채널.
+   접수는 모든 사용자, 해결 처리·삭제는 관리자. (백엔드 DevLog 시트/액션 재사용)
 ========================================================= */
-const DEVLOG_META = {
-  '아이디어':{ ic:'💡', chip:'chip-warn' },
-  '결정':    { ic:'✅', chip:'chip-in' },
-  '할일':    { ic:'📌', chip:'chip-move' },
-  '버그':    { ic:'🐛', chip:'chip-out' },
+const FEEDBACK_META = {
+  '수정요청':{ ic:'🛠️', chip:'chip-move' },
+  '오류':    { ic:'🐛', chip:'chip-out' },
 };
-function admDevLog(){
-  $('#admBody').innerHTML = '<div class="empty">불러오는 중…</div>';
-  loadDevLog();
+function renderFeedback(){
+  $('#main').innerHTML = `<div class="sec-title">🛠️ 개선요청 · 오류신고</div><div id="fbBody"><div class="empty">불러오는 중…</div></div>`;
+  loadFeedback();
 }
-async function loadDevLog(){
-  const f = S._devlogF || 'ALL';
-  try{ const r = await api('listDevLog', { category:f }, {noApply:true}); drawDevLog(r.logs); }
+async function loadFeedback(){
+  const f = S._fbF || 'ALL';
+  try{ const r = await api('listDevLog', { category:f }, {noApply:true}); drawFeedback(r.logs); }
   catch(e){ toast(e.message,'err'); }
 }
-function drawDevLog(logs){
-  const f = S._devlogF || 'ALL';
-  $('#admBody').innerHTML = `
+function drawFeedback(logs){
+  const f = S._fbF || 'ALL';
+  $('#fbBody').innerHTML = `
     <div class="card">
-      <b style="font-size:14px">📝 새 기록 추가</b>
-      <p class="muted" style="margin:6px 0 10px">개발 방향, 결정 이유, 할 일, 버그를 시간순으로 남겨두는 팀 개발로그입니다. 구글 시트 DevLog 탭에 그대로 저장됩니다.</p>
+      <b style="font-size:14px">✍️ 새 요청·신고</b>
+      <p class="muted" style="margin:6px 0 10px">앱을 쓰다 고쳤으면 하는 점(수정요청)이나 오류를 남겨주세요. 관리자가 확인해 반영합니다. 오류 코드가 떴다면 함께 적어주시면 좋아요.</p>
       <div class="row">
-        <div class="field"><label>분류</label><select id="dlCat">${Object.keys(DEVLOG_META).map(c=>`<option>${c}</option>`).join('')}</select></div>
-        <div class="field" style="flex:2"><label>제목</label><input id="dlTitle" placeholder="예: 로트 다중 위치 보관 지원 검토"></div>
+        <div class="field"><label>유형</label><select id="fbCat">${Object.keys(FEEDBACK_META).map(c=>`<option>${c}</option>`).join('')}</select></div>
+        <div class="field" style="flex:2"><label>제목</label><input id="fbTitle" placeholder="예: 출고 사유를 필수로 / 스캔이 가끔 멈춰요 [E9000]"></div>
       </div>
-      <div class="field"><label>내용 (선택)</label><textarea id="dlContent" rows="3" placeholder="배경, 이유, 참고 링크 등을 자유롭게 적어두세요" style="width:100%;padding:10px;border:1.5px solid var(--line);border-radius:9px"></textarea></div>
-      <button class="btn btn-primary" id="dlAdd" style="width:100%">기록 추가</button>
+      <div class="field"><label>내용 (선택)</label><textarea id="fbContent" rows="3" placeholder="어떤 상황인지, 어떤 화면인지 적어주시면 반영에 도움이 됩니다" style="width:100%;padding:10px;border:1.5px solid var(--line);border-radius:9px"></textarea></div>
+      <button class="btn btn-primary" id="fbAdd" style="width:100%">보내기</button>
     </div>
-    <div class="searchbar"><select id="dlFilter" style="flex:1">${['ALL',...Object.keys(DEVLOG_META)].map(c=>`<option value="${c}" ${f===c?'selected':''}>${c==='ALL'?'전체':c}</option>`).join('')}</select></div>
-    <div id="dlList">${logs.length? logs.map(devLogCard).join('') : '<div class="empty"><b>기록이 없습니다</b>개발 방향, 결정 사항, 할 일을 남겨보세요.</div>'}</div>`;
-  $('#dlFilter').onchange = e=>{ S._devlogF = e.target.value; loadDevLog(); };
-  $('#dlAdd').onclick = ()=>busy($('#dlAdd'), async ()=>{
-    const title = $('#dlTitle').value.trim();
+    <div class="searchbar"><select id="fbFilter" style="flex:1">${['ALL',...Object.keys(FEEDBACK_META)].map(c=>`<option value="${c}" ${f===c?'selected':''}>${c==='ALL'?'전체':c}</option>`).join('')}</select></div>
+    <div id="fbList">${logs.length? logs.map(feedbackCard).join('') : '<div class="empty"><b>접수된 요청·신고가 없습니다</b>불편한 점이나 오류를 남겨주세요.</div>'}</div>`;
+  $('#fbFilter').onchange = e=>{ S._fbF = e.target.value; loadFeedback(); };
+  $('#fbAdd').onclick = ()=>busy($('#fbAdd'), async ()=>{
+    const title = $('#fbTitle').value.trim();
     if(!title) return toast('제목을 입력하세요','err');
     try{
-      const r = await api('addDevLog', { category:$('#dlCat').value, title, content:$('#dlContent').value.trim() }, {noApply:true});
-      toast('기록이 추가되었습니다','ok');
-      $('#dlTitle').value=''; $('#dlContent').value='';
-      renderDevLogList(r.logs);
+      const r = await api('addDevLog', { category:$('#fbCat').value, title, content:$('#fbContent').value.trim() }, {noApply:true});
+      toast('접수되었습니다. 감사합니다!','ok');
+      $('#fbTitle').value=''; $('#fbContent').value='';
+      renderFeedbackList(r.logs);
     }catch(e){ toast(e.message,'err'); }
   });
-  bindDevLogEvents();
+  bindFeedbackEvents();
 }
-function renderDevLogList(logs){
-  $('#dlList').innerHTML = logs.length? logs.map(devLogCard).join('') : '<div class="empty"><b>기록이 없습니다</b></div>';
-  bindDevLogEvents();
+function renderFeedbackList(logs){
+  $('#fbList').innerHTML = logs.length? logs.map(feedbackCard).join('') : '<div class="empty"><b>접수된 요청·신고가 없습니다</b></div>';
+  bindFeedbackEvents();
 }
-function devLogCard(l){
-  const m = DEVLOG_META[l.category] || { ic:'📝', chip:'chip-gray' };
-  const doneToggle = (l.category==='할일'||l.category==='버그') ? `
-    <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:#7A8494;margin-left:auto;white-space:nowrap">
-      <input type="checkbox" data-done="${esc(l.id)}" ${l.done?'checked':''}> ${l.category==='버그'?'해결됨':'완료'}
-    </label>` : '';
+function feedbackCard(l){
+  const m = FEEDBACK_META[l.category] || { ic:'📝', chip:'chip-gray' };
+  const isAdmin = S.me.role==='admin';
+  const resolve = isAdmin
+    ? `<label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--t2);margin-left:auto;white-space:nowrap">
+         <input type="checkbox" data-fbdone="${esc(l.id)}" ${l.done?'checked':''}> 해결됨</label>`
+    : (l.done?`<span class="chip chip-in" style="margin-left:auto">해결됨</span>`:'');
   return `<div class="issue-card" style="${l.done?'opacity:.6':''}">
     <div class="ihead">
       <span class="chip ${m.chip}">${m.ic} ${esc(l.category)}</span>
       <span class="ititle" style="${l.done?'text-decoration:line-through':''}">${esc(l.title)}</span>
-      ${doneToggle}
+      ${resolve}
     </div>
     ${l.content?`<div class="idesc">${esc(l.content).replace(/\n/g,'<br>')}</div>`:''}
     <div class="imeta">${esc(l.author)} · ${new Date(l.ts).toLocaleString('ko-KR')}
-      <button class="btn btn-danger btn-sm" style="margin-left:8px" data-del-log="${esc(l.id)}">삭제</button>
+      ${isAdmin?`<button class="btn btn-danger btn-sm" style="margin-left:8px" data-fbdel="${esc(l.id)}">삭제</button>`:''}
     </div>
   </div>`;
 }
-function bindDevLogEvents(){
-  document.querySelectorAll('[data-done]').forEach(cb=>cb.onchange=async ()=>{
-    try{ const r = await api('updateDevLog', { id:cb.dataset.done, done:cb.checked }, {noApply:true}); renderDevLogList(r.logs); }
+function bindFeedbackEvents(){
+  document.querySelectorAll('[data-fbdone]').forEach(cb=>cb.onchange=async ()=>{
+    try{ const r = await api('updateDevLog', { id:cb.dataset.fbdone, done:cb.checked }, {noApply:true}); renderFeedbackList(r.logs); }
     catch(e){ toast(e.message,'err'); }
   });
-  document.querySelectorAll('[data-del-log]').forEach(b=>b.onclick=async ()=>{
-    if(!confirm('이 기록을 삭제할까요?')) return;
-    try{ const r = await api('delDevLog', { id:b.dataset.delLog }, {noApply:true}); toast('삭제 완료','ok'); renderDevLogList(r.logs); }
+  document.querySelectorAll('[data-fbdel]').forEach(b=>b.onclick=async ()=>{
+    if(!confirm('이 항목을 삭제할까요?')) return;
+    try{ const r = await api('delDevLog', { id:b.dataset.fbdel }, {noApply:true}); toast('삭제 완료','ok'); renderFeedbackList(r.logs); }
     catch(e){ toast(e.message,'err'); }
   });
 }

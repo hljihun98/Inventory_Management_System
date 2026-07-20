@@ -249,8 +249,9 @@ function handle_(req) {
     case 'testChat':         admin_(user); return { ok: true, sent: notifyChat_('🔔 LOT-IMS 테스트 메시지입니다. Chat 연동이 정상 동작합니다.') };
     case 'testEmail':        admin_(user); return { ok: true, sent: sendDailyDigest_(true) };
     case 'installDailyAlerts': admin_(user); return { ok: true, installed: installDailyAlerts_() };
-    case 'addDevLog':    admin_(user); return withLock_(function () { return addDevLog_(user, req); });
-    case 'listDevLog':   admin_(user); return { ok: true, logs: listDevLog_(req || {}) };
+    // 개선요청·오류신고 채널: 접수·조회는 모든 사용자, 해결 처리·삭제는 관리자
+    case 'addDevLog':    return withLock_(function () { return addDevLog_(user, req); });
+    case 'listDevLog':   return { ok: true, logs: listDevLog_(req || {}) };
     case 'updateDevLog': admin_(user); return withLock_(function () { return updateDevLog_(req); });
     case 'delDevLog':    admin_(user); return withLock_(function () { return delDevLog_(req); });
     default: throw new Error('알 수 없는 요청: ' + action);

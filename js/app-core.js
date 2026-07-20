@@ -281,7 +281,7 @@ async function doLogin(){
       $('#loginView').classList.add('hidden');
       $('#appView').classList.remove('hidden');
       $('#whoName').textContent = S.me.name;
-      $('#whoRole').textContent = S.me.role==='admin' ? '관리자' : '작업자';
+      $('#whoRole').textContent = S.me.role==='admin' ? '관리자' : '사용자';
       $('#whoAvatar').textContent = (S.me.name||'?').trim().slice(0,1).toUpperCase();
       buildTabs(); go('scan');
     }catch(e){ toast(e.message,'err'); }
@@ -303,13 +303,14 @@ const TABS = [
   { id:'loc',   ic:'🗺️', label:'위치' },
   { id:'hist',  ic:'🧾', label:'이력' },
 ];
-const MORE_TABS = ['bulkio','moveadjust','doc','issue','report'];
+const MORE_TABS = ['bulkio','moveadjust','doc','issue','report','feedback'];
 const MORE_META = {
   bulkio:     { ic:'📥', label:'일괄 입출고', desc:'여러 로트를 표로 한 번에 입·출고 (붙여넣기 지원)' },
   moveadjust: { ic:'🔧', label:'재고 조정·이동', desc:'보관 위치 이동 · 실사 재고 조정 (가끔 쓰는 작업)' },
   doc:        { ic:'📁', label:'문서함',     desc:'로트별 사진·문서 보관 (Google Drive)' },
   issue:      { ic:'🚨', label:'품질신고',   desc:'이상 신고 접수 및 처리 현황' },
   report:     { ic:'📊', label:'리포트',     desc:'재고 통계 · 대시보드 · Looker Studio' },
+  feedback:   { ic:'🛠️', label:'개선요청·오류신고', desc:'앱 수정 요청·오류를 관리자에게 전달' },
 };
 function buildTabs(){
   const moreActive = MORE_TABS.includes(S.tab);
@@ -360,7 +361,7 @@ const ERR_CATALOG = [
   { grp:'권한 · 인증 (E2)', items:[
     ['E2001','로그인 필요','인증 정보 없음/만료','다시 로그인'],
     ['E2002','아이디/비밀번호 오류','로그인 정보 불일치','정보 확인 후 재시도'],
-    ['E2003','관리자 권한 필요','작업자 계정이 관리 기능 시도','관리자 계정으로 로그인'],
+    ['E2003','관리자 권한 필요','사용자(비관리자) 계정이 관리 기능 시도','관리자 계정으로 로그인'],
     ['E2004','동기화 토큰 오류','AppSheet 연동 토큰 불일치/미설정','관리 → 알림/연동에서 토큰 설정'],
   ]},
   { grp:'충돌 · 리소스 (E3·E4·E5)', items:[
@@ -405,7 +406,7 @@ async function go(tab){
 function renderCurrent(){
   renderAlerts();
   ({scan:renderScan, inv:renderInv, loc:renderLoc, hist:renderHist, admin:renderAdmin,
-    bulkio:renderBulkIO, moveadjust:renderMoveAdjust, doc:renderDoc, issue:renderIssue, report:renderReport})[S.tab]?.();
+    bulkio:renderBulkIO, moveadjust:renderMoveAdjust, doc:renderDoc, issue:renderIssue, report:renderReport, feedback:renderFeedback})[S.tab]?.();
 }
 /* 수동 새로고침 — 다른 사용자가 시트를 바꿨을 때 최신 데이터로 동기화 */
 async function refreshNow(){

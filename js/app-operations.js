@@ -638,16 +638,16 @@ function renderAdmin(){
   const seg = (id,label)=>`<button data-adm="${id}" class="${t===id?'on-move':''}">${label}</button>`;
   $('#main').innerHTML = `
     <div class="sec-title">⚙️ 관리</div>
-    <div class="seg seg-compact" style="margin-bottom:12px">${seg('users','사용자')}${seg('items','품번')}${seg('bom','BOM')}${seg('locs','위치')}${seg('notify','알림')}${seg('devlog','메모')}${seg('data','데이터')}</div>
+    <div class="seg seg-compact" style="margin-bottom:12px">${seg('users','사용자')}${seg('items','품번')}${seg('bom','BOM')}${seg('locs','위치')}${seg('notify','알림')}${seg('data','데이터')}</div>
     <div id="admBody"></div>`;
   document.querySelectorAll('[data-adm]').forEach(b=>b.onclick=()=>{ S._admTab=b.dataset.adm; renderAdmin(); });
-  ({users:admUsers, items:admItems, bom:admBOM, locs:admLocs, notify:admNotify, devlog:admDevLog, data:admData})[t]();
+  ({users:admUsers, items:admItems, bom:admBOM, locs:admLocs, notify:admNotify, data:admData})[t]();
 }
 function admUsers(){
   $('#admBody').innerHTML = `
     <div class="card"><table class="table"><thead><tr><th>아이디</th><th>이름</th><th>역할</th><th></th></tr></thead><tbody>
       ${S.users.map(u=>`<tr><td style="font-family:var(--mono)">${esc(u.id)}</td><td>${esc(u.name)}</td>
-        <td><span class="chip ${u.role==='admin'?'chip-move':'chip-gray'}">${u.role==='admin'?'관리자':'작업자'}</span></td>
+        <td><span class="chip ${u.role==='admin'?'chip-move':'chip-gray'}">${u.role==='admin'?'관리자':'사용자'}</span></td>
         <td style="text-align:right">${u.id!=='admin'?`<button class="btn btn-danger btn-sm" data-del-user="${esc(u.id)}">삭제</button>`:''}
         <button class="btn btn-ghost btn-sm" data-pw-user="${esc(u.id)}">비번변경</button></td></tr>`).join('')}
     </tbody></table></div>
@@ -657,7 +657,7 @@ function admUsers(){
         <div class="field"><label>이름</label><input id="nuName"></div></div>
       <div class="row">
         <div class="field"><label>비밀번호</label><input id="nuPw" type="password"></div>
-        <div class="field"><label>역할</label><select id="nuRole"><option value="worker">작업자</option><option value="admin">관리자</option></select></div></div>
+        <div class="field"><label>역할</label><select id="nuRole"><option value="worker">사용자</option><option value="admin">관리자</option></select></div></div>
       <button class="btn btn-primary" id="nuAdd">추가</button></div>`;
   $('#nuAdd').onclick = ()=>busy($('#nuAdd'), async ()=>{
     const id=$('#nuId').value.trim(), name=$('#nuName').value.trim(), pw=$('#nuPw').value, role=$('#nuRole').value;
