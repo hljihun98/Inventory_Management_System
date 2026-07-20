@@ -36,6 +36,10 @@ var SHEET_HEADERS = {
 };
 var DRIVE_FOLDER_NAME = 'LOT-IMS-Files';
 var DEFAULT_SETTINGS = { chatWebhookUrl: '', alertEmails: '', alertHour: '8', driveFolderId: '', syncToken: '' };
+/* Looker Studio 연동을 쓸 때만 true. false면 Report_Stock/Report_Tx/Report_BOM 미러 시트를
+   자동 유지하지 않는다(입출고·조립 hot-path 비용 제거, 중복 시트 정리). 다시 쓰려면 true 로 바꾸고
+   재배포한 뒤 아무 입출고나 1회 하면 미러 시트가 다시 생성된다. */
+var LOOKER_STUDIO_ENABLED = false;
 /* 제품군 코드표 (품번 앞자리) — 프론트엔드 GROUP_NAMES 와 동일하게 유지 */
 var GROUP_NAMES = { RP: 'PARKIE', RD: 'DD-DRIVING', RG: 'GOALIE', RZ: 'COMMON PARTS', RQ: 'QD-DRIVING', RS: 'STANLEY' };
 function groupCodeOf_(code) { return String(code || '').split('-')[0].toUpperCase(); }
@@ -719,6 +723,7 @@ function reportData_() {
 /* Looker Studio 등 외부 BI 도구에서 바로 연결해 쓸 수 있도록
    품목명/단위 등을 조인해 평탄화한 참조용 시트를 재생성한다. */
 function rebuildReports_() {
+  if (!LOOKER_STUDIO_ENABLED) return;   // Looker 미사용 → 미러 시트 유지 안 함(입출고 가속)
   var items = readTable_('Items').rows, locs = readTable_('Locations').rows;
   var itemMap = {}; items.forEach(function (i) { itemMap[String(i.item_code).toUpperCase() + '|' + String(i.rev || '').toUpperCase()] = i; });
   var locMap = {}; locs.forEach(function (l) { locMap[l.location_code] = l; });
@@ -1158,6 +1163,7 @@ function disassemble_(user, p) {
 /* Report_BOM: 구조 전용(재고 없음). BOM/품목 변경 시에만 재작성 → IN/OUT/조립 hot-path와 분리.
    재고가 필요하면 Looker에서 child_code+child_rev → Report_Stock 조인. */
 function rebuildBomReport_() {
+  if (!LOOKER_STUDIO_ENABLED) return;   // Looker 미사용 → Report_BOM 미러 시트 유지 안 함
   var bom = readBOM_().rows;
   var items = readTable_('Items').rows;
   var itemMap = {}; items.forEach(function (i) { itemMap[bomKey_(i.item_code, i.rev)] = i; });
