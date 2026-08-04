@@ -74,7 +74,7 @@ schema.sql            # (참고) 동일 구조 PostgreSQL 스키마 — 추후 �
 - **CSS는 100% 변수 기반** — 색을 하드코딩하지 말 것. 다크모드는 `:root[data-theme="dark"]` 토큰 재매핑으로 동작.
 - **테마 기본값 = 라이트**. 사용자가 🌙/☀️로 바꿔 저장(`localStorage.ims_theme`)한 경우에만 그 값 사용(OS 설정 따르지 않음).
 - 안전재고 미달 **상단 경고 알람은 꺼둠**(요청). 카드의 "미달" 배지는 유지.
-- 바코드 스캔: `useBarCodeDetectorIfSupported`(안드로이드 가속) + QR·주요 1D 포맷 명시(아이폰 폴백). 인식 성공/실패 시 Web Audio 비프음.
+- 바코드 스캔: `useBarCodeDetectorIfSupported`(안드로이드 가속) + QR·주요 1D 포맷 명시(아이폰 폴백). Web Audio 비프음 3종(`beep`) — `ok`(성공·높은 삑) / `err`(미등록·낮은 삑) / `tick`(읽음, 시트 재조회 대기용 짧은 클릭). **한 번의 스캔에 성공음과 실패음이 겹치지 않게** 유지할 것: 메모리에 있으면 즉시 `ok`, 없으면 `tick` → 재조회 → `ok`/`err`.
 
 ## 9. 배포 (중요)
 

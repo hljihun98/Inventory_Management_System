@@ -76,7 +76,7 @@ async function initAudio(){
   }catch(e){ return null; }
 }
 /* 계산대 스캐너처럼 짧고 또렷한 고음. 두 주파수를 겹쳐 휴대폰의 작은 스피커에서도 잘 들리게 한다. */
-async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'(미등록/실패)
+async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'(미등록/실패) · 'tick'(읽음 — 조회 대기)
   try{
     const ctx = await initAudio(); if(!ctx) return;
     const t=ctx.currentTime+0.005;
@@ -101,11 +101,14 @@ async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'
     if(kind==='err'){
       tone('square',360,290,0,0.14,0.32);
       tone('square',310,250,0.17,0.14,0.28);
+    }else if(kind==='tick'){                 // 바코드를 읽었다는 신호만 — 성공 삑보다 낮고 짧고 작게
+      tone('triangle',1150,980,0,0.045,0.2);
     }else{
       tone('square',1950,1650,0,0.105,0.42);
       tone('sine',2850,2350,0,0.085,0.16);
     }
-    setTimeout(()=>{ try{ master.disconnect(); limiter.disconnect(); }catch(e){} }, kind==='err'?400:220);
+    const hold = kind==='err' ? 400 : (kind==='tick' ? 150 : 220);
+    setTimeout(()=>{ try{ master.disconnect(); limiter.disconnect(); }catch(e){} }, hold);
   }catch(e){}
 }
 function remember(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
