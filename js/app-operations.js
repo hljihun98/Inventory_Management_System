@@ -162,11 +162,12 @@ async function onCode(raw, manual){
   const now = Date.now();                       // 중복 스캔 방지 (2.5초)
   if(!manual && raw===S.lastScan.code && now-S.lastScan.at<2500) return;
   S.lastScan = { code: raw, at:now };
+  // 카메라 디코더가 읽은 즉시 피드백. 서버 재조회가 필요한 품번도 소리가 늦게 나지 않는다.
+  if(!manual){ beep('ok'); if(navigator.vibrate) navigator.vibrate(35); }
   let r = resolveScan(raw);
   if(!r.item && !r.ambiguous){ await loadAll(); r = resolveScan(raw); }   // 없으면 시트 재조회
   if(r.item){
-    beep('ok');                                  // 인식 성공 삑
-    if(navigator.vibrate) navigator.vibrate(30);
+    if(manual){ beep('ok'); if(navigator.vibrate) navigator.vibrate(35); }
     S.scanTarget = { code:r.item.code, rev:r.item.rev||'' }; S.scanMode='IN';
     S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined;   // 새 스캔마다 품질 이상 여부 초기화
     S._inPhotos=[]; S._inReason='';                                 // 인증사진·사유 초기화

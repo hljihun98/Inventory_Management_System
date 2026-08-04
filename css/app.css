@@ -187,7 +187,9 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 /* ---------- 재고 현황 ---------- */
 .item-card{background:var(--sf);border:1px solid var(--bd);border-radius:12px;margin-bottom:11px;overflow:hidden;box-shadow:var(--sh)}
 .item-head{display:flex;align-items:center;gap:10px;padding:13px 15px;cursor:pointer}
-.item-head .nm{font-weight:700;font-size:15px}
+.item-head .item-info{flex:1;min-width:0}
+.item-head .nm{font-weight:700;font-size:15px;line-height:1.35;overflow-wrap:anywhere}
+.item-head .item-status{display:flex;align-items:center;gap:5px;margin-top:4px;white-space:nowrap}
 .item-head .cd{font-family:var(--fm);font-size:11.5px;color:var(--t3)}
 .item-head .qty{margin-left:auto;text-align:right}
 .item-head .qty b{font-size:19px;font-variant-numeric:tabular-nums;font-family:var(--fd);font-weight:700}

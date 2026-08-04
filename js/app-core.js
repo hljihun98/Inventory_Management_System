@@ -66,21 +66,46 @@ async function sha256(str){
    브라우저 자동재생 정책상 오디오는 사용자 제스처 안에서 생성해야 소리가 남 →
    '카메라 스캔 시작' 버튼 클릭(startScan) 시 initAudio() 로 미리 활성화한다. */
 let _actx = null;
-function initAudio(){
-  try{ _actx = _actx || new (window.AudioContext || window.webkitAudioContext)();
-    if(_actx.state==='suspended') _actx.resume(); }catch(e){}
-}
-function beep(kind){                       // kind: 'ok'(인식 성공, 높은 삑) · 'err'(미등록/실패, 낮은 삑)
+async function initAudio(){
   try{
-    initAudio(); if(!_actx) return;
-    const t=_actx.currentTime, o=_actx.createOscillator(), g=_actx.createGain();
-    const long = kind==='err';
-    o.type='square'; o.frequency.value = long ? 240 : 920;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.3, t+0.005);
-    g.gain.exponentialRampToValueAtTime(0.0001, t+(long?0.22:0.12));
-    o.connect(g); g.connect(_actx.destination);
-    o.start(t); o.stop(t+(long?0.24:0.14));
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if(!AudioCtx) return null;
+    _actx = _actx || new AudioCtx();
+    if(_actx.state==='suspended') await _actx.resume();
+    return _actx.state==='running' ? _actx : null;
+  }catch(e){ return null; }
+}
+/* 계산대 스캐너처럼 짧고 또렷한 고음. 두 주파수를 겹쳐 휴대폰의 작은 스피커에서도 잘 들리게 한다. */
+async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'(미등록/실패)
+  try{
+    const ctx = await initAudio(); if(!ctx) return;
+    const t=ctx.currentTime+0.005;
+    const master=ctx.createGain(), limiter=ctx.createDynamicsCompressor();
+    master.gain.value=0.72;
+    limiter.threshold.value=-10; limiter.knee.value=4; limiter.ratio.value=8;
+    limiter.attack.value=0.002; limiter.release.value=0.08;
+    master.connect(limiter); limiter.connect(ctx.destination);
+
+    const tone=(type, fromHz, toHz, delay, duration, peak)=>{
+      const o=ctx.createOscillator(), g=ctx.createGain(), start=t+delay, end=start+duration;
+      o.type=type;
+      o.frequency.setValueAtTime(fromHz,start);
+      o.frequency.exponentialRampToValueAtTime(toHz,end);
+      g.gain.setValueAtTime(0.0001,start);
+      g.gain.exponentialRampToValueAtTime(peak,start+0.004);
+      g.gain.setValueAtTime(peak,end-0.018);
+      g.gain.exponentialRampToValueAtTime(0.0001,end);
+      o.connect(g); g.connect(master); o.start(start); o.stop(end+0.01);
+    };
+
+    if(kind==='err'){
+      tone('square',360,290,0,0.14,0.32);
+      tone('square',310,250,0.17,0.14,0.28);
+    }else{
+      tone('square',1950,1650,0,0.105,0.42);
+      tone('sine',2850,2350,0,0.085,0.16);
+    }
+    setTimeout(()=>{ try{ master.disconnect(); limiter.disconnect(); }catch(e){} }, kind==='err'?400:220);
   }catch(e){}
 }
 function remember(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
@@ -527,7 +552,8 @@ function invCard(it, ctx){
   const buildable = assy ? (ctx ? ctx.buildable(it.code, it.rev) : buildableOf(it.code, it.rev)) : null;
   return `<div class="item-card">
     <div class="item-head" data-detail="${esc(it.code)}" data-detail-rev="${esc(it.rev||'')}" style="cursor:pointer">
-      <div><div class="nm">${esc(it.name||it.code)} ${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''} ${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>
+      <div class="item-info"><div class="nm">${esc(it.name||it.code)} ${assy?'<span class="chip chip-move">🔧 조립품</span>':''}</div>
+        ${(it.rev||low)?`<div class="item-status">${it.rev?`<span class="chip chip-gray">Rev ${esc(it.rev)}</span>`:''}${low?'<span class="chip chip-warn">안전재고 미달</span>':''}</div>`:''}
         <div class="cd">${esc(skuOf(it.code,it.rev))} · 안전재고 ${fmt(it.safetyStock)}${esc(it.unit)}${it.location?' · 📍'+esc(it.location):''}${assy?` · 조립가능 ${fmt(buildable)}${esc(it.unit)}`:''}</div></div>
       <div class="qty"><b>${fmt(qty)}</b> <span>${esc(it.unit)}</span></div>
     </div>
