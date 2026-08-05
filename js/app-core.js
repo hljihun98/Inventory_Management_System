@@ -17,6 +17,7 @@ const S = {
   scanTarget:null, scanMode:'IN',
   scanner:null, scanning:false,
   lastScan:{code:'',at:0},
+  scanPop:null, scanPopLock:false,          // 스캔 플로팅 카드 상태 / 사용자가 손댄 뒤 대상 교체 방지 락
   histFilter:'ALL',
 };
 
@@ -328,6 +329,7 @@ async function doLogin(){
 }
 function doLogout(){
   stopScan();
+  closeScanPop();                 // 하단 고정 카드는 body 자식이라 로그인 화면 위에 남을 수 있음
   lockRelease();
   S.me = null; S.auth = null; S.loaded = false;
   // 화면·입력 상태 초기화 → 같은 기기에서 다른 사용자가 로그인해도 이전 상태(스캔 대상·사진·이상내용·초안)가 남지 않음
@@ -439,7 +441,7 @@ function openErrorHelp(){
     <div class="row" style="margin-top:14px"><button class="btn btn-ghost" onclick="closeModal()">닫기</button></div>`);
 }
 async function go(tab){
-  if(S.tab==='scan' && tab!=='scan') stopScan();
+  if(S.tab==='scan' && tab!=='scan'){ stopScan(); closeScanPop(); }   // 하단 고정 카드는 body 자식이라 #main 재렌더로 사라지지 않음
   if(LOCK.resource) lockRelease();          // 다른 탭으로 이동하면 편집 잠금 해제
   S.tab = tab; buildTabs();
   if(!S.loaded){                          // 시트 전체 로드는 최초 1회만 (이후엔 메모리 상태로 즉시 렌더)

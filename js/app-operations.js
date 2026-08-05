@@ -38,6 +38,7 @@ function renderScan(){
   $('#manualGo').onclick = ()=>{ const v=$('#manualCode').value.trim(); if(v) onCode(v,true); };
   $('#manualCode').addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=e.target.value.trim(); if(v) onCode(v,true); e.target.select(); }});
   if(S.scanTarget) drawScanPanel();
+  if(S.scanPop) drawScanPop();     // 🔄 새로고침 등으로 화면을 다시 그려도 열려 있던 카드는 유지
 }
 /* QR + 주요 1D(막대) 포맷을 명시 지정 → 안드로이드(네이티브 디코더)·아이폰(JS 디코더) 양쪽에서
    QR·막대 둘 다 확실히 인식. 라이브러리 미로드 등으로 enum이 없으면 undefined 반환(전체 포맷 기본값 사용). */
@@ -59,6 +60,7 @@ async function startScan(){
     // 시작 도중 다른 탭 이동/중지로 이미 정리됐으면 이 인스턴스를 즉시 멈춰 카메라를 놓아준다(레이스 방지)
     if(S.scanner !== inst || S.tab!=='scan'){ try{ await inst.stop(); inst.clear(); }catch(e){} return; }
     S.scanning = true;
+    if(S.scanPop) drawScanPop();   // 하단 고정 카드가 열려 있었으면 뷰파인더 안으로 옮김
     setupTapFocus('reader');   // 탭하여 초점 재조정(안드로이드 지원 · iOS는 무시)
     const btn=$('#scanToggle'); if(btn){ btn.textContent='카메라 스캔 중지'; btn.classList.replace('btn-primary','btn-danger'); }
   }catch(e){
@@ -68,6 +70,7 @@ async function startScan(){
 async function stopScan(rerender){
   if(S.scanner){ try{ await S.scanner.stop(); S.scanner.clear(); }catch(e){} }   // 시작 중이어도(=scanning 아직 false) 인스턴스가 있으면 정리
   S.scanning=false; S.scanner=null;
+  if(S.scanPop) drawScanPop();   // 카메라를 끄면 카드를 화면 하단 고정으로 옮김(입력 중이던 수량 보존)
   if(rerender && S.tab==='scan' && $('#scanToggle')){ $('#scanToggle').textContent='카메라 스캔 시작'; $('#scanToggle').classList.replace('btn-danger','btn-primary'); }
 }
 
@@ -158,16 +161,130 @@ async function openScanModal(onDetect){
     toast('카메라를 열 수 없습니다. HTTPS 접속·카메라 권한을 확인하거나 직접 입력하세요','err');
   }
 }
+/* =========================================================
+   스캔 플로팅 카드 — 바코드를 읽는 즉시 결과를 띄우고, 카메라를 켠 채로 입·출고까지 끝낸다.
+   비프음과 상태를 1:1로 짝지음: tick→pending · ok→ok · err→err (+처리 완료 done).
+   위치: 카메라 가동 중이면 뷰파인더(#reader) 안, 꺼져 있으면(수동 입력·USB 리더기) 화면 하단 고정.
+   위치이동/재고조정/품질이상/인증사진은 카드에 넣지 않고 "상세"로 하단 패널(#scanPanel)로 보낸다.
+========================================================= */
+let _popTimer = null;
+/* state: 'pending'(조회 중) · 'ok'(인식) · 'err'(미등록/불명확) · 'done'(처리 완료) */
+function scanPop(state, data){
+  clearTimeout(_popTimer); _popTimer = null;
+  S.scanPop = Object.assign({ state, mode:'IN', qty:1 }, data||{});
+  S.scanPopLock = false;                        // 새 카드는 아직 손대지 않음 → 다음 스캔이 그대로 교체 가능
+  drawScanPop();
+}
+function closeScanPop(){
+  clearTimeout(_popTimer); _popTimer = null;
+  S.scanPop = null; S.scanPopLock = false;
+  const el = document.getElementById('scanPop'); if(el) el.remove();
+}
+function drawScanPop(){
+  const p = S.scanPop; if(!p) return;
+  const rd = $('#reader');                            // 카메라 영상이 실제로 붙어 있을 때만 뷰파인더 안에 얹는다
+  const reader = (S.scanning && rd && rd.querySelector('video')) ? rd : null;   // 아니면 화면 하단 고정
+  const host = reader || document.body;
+  const it = p.state==='ok' ? findItem(p.code, p.rev) : null;
+  if(p.state==='ok' && !it) return closeScanPop();    // 그 사이 품번이 삭제된 경우
+  let el = document.getElementById('scanPop');
+  if(el && el.parentElement!==host){ el.remove(); el=null; }   // 카메라 on/off 시 앵커 이동
+  if(!el){
+    el = document.createElement('div'); el.id='scanPop';
+    el.setAttribute('role','status'); el.setAttribute('aria-live','polite');
+    el.onclick = e => e.stopPropagation();     // #reader 의 탭 초점 재조정으로 버블링되지 않게(초점 링 오작동 방지)
+    host.appendChild(el);
+  }
+  el.className = `scan-pop ${p.state} ${reader?'in-reader':'fixed'}`;
+  el.innerHTML = scanPopBody(p, it);
+  bindScanPop(el, p, it);
+}
+function scanPopBody(p, it){
+  const x = `<button class="sp-x" aria-label="닫기">✕</button>`;
+  if(p.state==='pending') return `${x}
+    <div class="sp-row"><span class="sp-ic">🔍</span><div>
+      <div class="sp-sku">${esc(p.raw||'')}</div>
+      <div class="sp-meta">시트에서 조회 중<span class="sp-dots"><i></i><i></i><i></i></span></div></div></div>`;
+  if(p.state==='err') return `${x}
+    <div class="sp-row"><span class="sp-ic">⛔</span><div>
+      <div class="sp-sku">${esc(skuOf(p.code,p.rev))}</div>
+      <div class="sp-meta">${esc(p.msg||'인식할 수 없는 바코드입니다')}</div></div></div>
+    ${p.unregistered && S.me.role==='admin' ? `<button class="btn btn-primary sp-reg">이 품번 등록하기</button>` : ''}`;
+  if(p.state==='done') return `
+    <div class="sp-row"><span class="sp-ic">✅</span><div>
+      <div class="sp-sku">${esc(skuOf(p.code,p.rev))}</div>
+      <div class="sp-meta">${p.mode==='IN'?'입고 +':'출고 −'}${fmt(p.qty)} 완료 · 현재고 <b>${fmt(p.after)}${esc(p.unit||'')}</b></div></div></div>`;
+  // ── ok: 품번 요약 + 인라인 입·출고 ──
+  const low = it.safetyStock>0 && Number(it.stock||0)<Number(it.safetyStock);
+  return `${x}
+    <div class="sp-row"><span class="sp-ic">✅</span><div>
+      <div class="sp-sku">${esc(skuOf(it.code,it.rev))}</div>
+      <div class="sp-meta">${esc(it.name||it.code)} · 현재고 <b>${fmt(it.stock)}${esc(it.unit||'')}</b>${low?' <span class="sp-low">미달</span>':''} · 📍${esc(it.location||'위치 미지정')}</div></div></div>
+    <div class="seg seg-compact sp-seg">
+      <button data-m="IN"  class="${p.mode==='IN' ?'on-in' :''}">입고</button>
+      <button data-m="OUT" class="${p.mode==='OUT'?'on-out':''}">출고</button>
+    </div>
+    <div class="sp-act">
+      <div class="big-qty sp-qty"><button data-q="-">−</button>
+        <input id="spQty" type="number" min="1" value="${Number(p.qty)||1}" inputmode="numeric" aria-label="수량">
+        <button data-q="+">+</button></div>
+      <button class="btn ${p.mode==='IN'?'btn-in':'btn-out'} sp-go">${p.mode==='IN'?'입고':'출고'}</button>
+    </div>
+    <button class="sp-more">상세 · 이동 / 조정 / 사진 / 사유 ▾</button>`;
+}
+function bindScanPop(el, p, it){
+  const x = el.querySelector('.sp-x'); if(x) x.onclick = ()=>closeScanPop();
+  if(p.state==='done'){ _popTimer = setTimeout(closeScanPop, 1600); return; }   // 잠깐 보여준 뒤 자동 소멸(카메라는 계속 스캔)
+  if(p.state==='err'){
+    const rg = el.querySelector('.sp-reg');
+    if(rg) rg.onclick = ()=>{   // 미등록 품번 → 관리 화면 품번 등록으로 프리필 이동
+      S._prefillNewItemCode = p.code; S._prefillNewItemRev = p.rev||''; S._admTab='items';
+      closeScanPop(); go('admin');
+    };
+    return;
+  }
+  if(p.state!=='ok') return;
+  const qi = el.querySelector('#spQty');
+  const touch = ()=>{ S.scanPopLock = true; };   // 손댄 뒤에는 다른 바코드가 대상을 갈아치우지 못하게 잠금
+  el.querySelectorAll('.sp-seg [data-m]').forEach(b=>b.onclick=()=>{ p.mode=b.dataset.m; touch(); drawScanPop(); });
+  el.querySelectorAll('.sp-qty [data-q]').forEach(b=>b.onclick=()=>{
+    p.qty = Math.max(1, (Math.floor(Number(qi.value)||1)) + (b.dataset.q==='+'?1:-1));
+    qi.value = p.qty; touch();
+  });
+  qi.oninput = ()=>{ p.qty = Math.max(1, Math.floor(Number(qi.value)||1)); touch(); };
+  el.querySelector('.sp-more').onclick = ()=>{   // 이동·조정·품질이상·사진·사유는 하단 패널에서
+    S.scanTarget = { code:it.code, rev:it.rev||'' }; S.scanMode = p.mode;
+    closeScanPop(); drawScanPanel();
+    $('#scanPanel')?.scrollIntoView({ behavior:'smooth', block:'start' });
+  };
+  const goBtn = el.querySelector('.sp-go');
+  goBtn.onclick = ()=>busy(goBtn, async ()=>{
+    const qty = Math.max(1, Math.floor(Number(qi.value)||0));
+    S.scanMode = p.mode;                         // 하단 패널도 방금 처리한 모드로 맞춤
+    const r = await processTx(it.code, it.rev||'', { mode:p.mode, qty });
+    if(r) scanPop('done', { code:it.code, rev:it.rev||'', mode:p.mode, qty, after:r.after, unit:it.unit||'' });
+    else S.scanPopLock = false;                  // 실패(재고 부족 등) → 카드는 유지, 다음 스캔은 교체 허용
+  });
+}
+
 async function onCode(raw, manual){
   const now = Date.now();                       // 중복 스캔 방지 (2.5초)
   if(!manual && raw===S.lastScan.code && now-S.lastScan.at<2500) return;
+  // 카드의 수량·모드를 이미 손댔다면 다른 품번 바코드가 대상을 갈아치우지 못하게 막는다.
+  // (손대지 않은 카드는 "다음 박스로 넘어간 것"으로 보고 그대로 교체 · 수동 입력은 명시적 조작이라 예외)
+  if(!manual && S.scanPopLock && S.scanPop && parseScan(raw).code !== S.scanPop.code){
+    if(!S.scanPop._warned){ S.scanPop._warned = true; beep('tick'); toast('처리 중인 스캔을 먼저 완료하거나 카드를 닫으세요','err'); }
+    return;
+  }
   S.lastScan = { code: raw, at:now };
   let r = resolveScan(raw);                     // 메모리 조회는 즉시 → 대부분 지연 없이 성공 삑
   if(!r.item && !r.ambiguous){
     // 시트 재조회는 대기가 생기므로 "읽었다"는 틱으로 먼저 알린다.
     // (여기서 성공 삑을 미리 울리면 미등록 품번에서 삑 → 실패음이 이어져 헷갈림)
     beep('tick'); if(navigator.vibrate) navigator.vibrate(20);
+    scanPop('pending', { raw, code: parseScan(raw).code });
     await loadAll(); r = resolveScan(raw);
+    if(!manual && raw!==S.lastScan.code) return;   // 조회 대기 중 다른 바코드가 들어왔으면 이 결과는 폐기(엉뚱한 품번 처리 방지)
   }
   if(r.item){
     beep('ok');                                  // 인식 성공 삑
@@ -176,22 +293,20 @@ async function onCode(raw, manual){
     S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined;   // 새 스캔마다 품질 이상 여부 초기화
     S._inPhotos=[]; S._inReason='';                                 // 인증사진·사유 초기화
     drawScanPanel();
+    scanPop('ok', { raw, code:r.item.code, rev:r.item.rev||'' });   // 뷰파인더 위 카드에서 바로 입·출고
     return;
   }
   beep('err');                                   // 미등록/불명확 — 낮은 삑
   if(navigator.vibrate) navigator.vibrate(80);
   if(r.ambiguous){   // 품번은 있으나 리비전 여러 개 — 리비전 포함해 스캔/입력 유도
-    return toast(`품번 ${r.code} 은 리비전이 여러 개입니다. 리비전까지 포함해 스캔하세요 (예: ${r.code} (D))`,'err');
+    return scanPop('err', { raw, code:r.code, rev:'',
+      msg:`리비전이 여러 개인 품번입니다. 리비전까지 포함해 스캔하세요 (예: ${r.code} (D))` });
   }
-  // ── 미등록 품번 복구 플로우 ──
+  // ── 미등록 품번 복구 플로우 ── (평시엔 AppSheet 동기화로 유입 · 관리자는 카드에서 바로 등록)
   const p = parseScan(raw);
-  if(S.me.role==='admin'){                                   // 관리자면 품번 등록 유도 (평시엔 AppSheet 동기화로 유입)
-    if(confirm(`등록되지 않은 품번: ${skuOf(p.code,p.rev)}\n관리 화면에서 이 품번을 새로 등록할까요?`)){
-      S._prefillNewItemCode = p.code; S._prefillNewItemRev = p.rev; S._admTab='items'; go('admin');
-    }
-  }else{
-    toast(`등록되지 않은 품번: ${skuOf(p.code,p.rev)} — 관리자에게 품번 등록을 요청하세요`,'err');
-  }
+  scanPop('err', { raw, code:p.code, rev:p.rev, unregistered:true,
+    msg: S.me.role==='admin' ? '등록되지 않은 품번입니다. 아래에서 바로 등록할 수 있습니다.'
+                             : '등록되지 않은 품번입니다. 관리자에게 품번 등록을 요청하세요.' });
 }
 function drawScanPanel(){
   const tgt = S.scanTarget || {};
@@ -281,9 +396,11 @@ function drawScanPanel(){
   }
   $('#qGo').onclick = ()=>busy($('#qGo'), ()=>processTx(it.code, it.rev||''));
 }
-async function processTx(code, rev){
-  const mode = S.scanMode;
-  let reason = ($('#qReason')?.value||'').trim();
+/* opts 를 주면 DOM(하단 패널) 대신 그 값으로 처리 — 스캔 플로팅 카드의 빠른 입·출고 경로.
+   opts = { mode:'IN'|'OUT', qty, reason? } · 성공 시 서버 응답(r)을 돌려주므로 호출부가 성공 여부를 판별할 수 있다. */
+async function processTx(code, rev, opts){
+  const mode = (opts && opts.mode) || S.scanMode;
+  let reason = String(opts ? (opts.reason||'') : ($('#qReason')?.value||'')).trim();
 
   // ── 위치 이동 (수량 변화 없음, 보관 위치만 변경) ──
   if(mode==='MOVE'){
@@ -315,13 +432,13 @@ async function processTx(code, rev){
   }
 
   // ── 입고 / 출고 ──
-  const qty = Math.floor(Number($('#qVal').value)||0);
-  const loc = mode==='IN' ? $('#qLoc').value : '';
+  const qty = opts ? Math.floor(Number(opts.qty)||0) : Math.floor(Number($('#qVal').value)||0);
+  const loc = (mode==='IN' && !opts) ? $('#qLoc').value : '';   // 카드 경로는 위치 미전송 → 서버가 기존 보관 위치 유지
   if(qty<1) return toast('수량은 1 이상이어야 합니다','err');
 
-  // ── 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브) ──
+  // ── 입고 품질 이상 여부 (ROBOSTOCK 입출고 모티브) — 하단 패널 전용, 카드는 항상 '정상' ──
   let status='정상', issue='', makeIssue=false;
-  if(mode==='IN'){
+  if(mode==='IN' && !opts){
     status = S._inStatus || '정상';
     if(status!=='정상'){
       issue = ($('#qIssue')?.value || S._inIssue || '').trim();
@@ -357,6 +474,7 @@ async function processTx(code, rev){
     toast(mode==='IN'?`입고 +${fmt(qty)} 완료 (현재고 ${fmt(r.after)})${stTag}`:`출고 −${fmt(qty)} 완료 (현재고 ${fmt(r.after)})`,'ok');
     S._inStatus='정상'; S._inIssue=''; S._inMakeIssue=undefined; S._inPhotos=[]; S._inReason='';   // 상태 초기화
     renderAlerts(); drawScanPanel();
+    return r;                    // 호출부(플로팅 카드)가 성공 여부·처리 후 재고를 판별
   }catch(e){ toast(e.message,'err'); }
 }
 
