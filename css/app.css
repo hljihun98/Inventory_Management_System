@@ -86,6 +86,11 @@ header.app .who b{font-size:13px;color:var(--tx)}
 #refreshBtn{border:1px solid var(--bd2);border-radius:8px;padding:6px 9px;font-size:13px;background:var(--sf);line-height:1}
 #refreshBtn:hover{border-color:var(--ac);background:var(--acl)}
 #refreshBtn:active{transform:rotate(180deg);transition:transform .3s}
+/* 헤더는 항목이 많아 좁은 화면에서 밀리기 쉽다(로고 120px 추가로 여유가 더 줄었다).
+   로고·버튼은 줄어들지 않게 고정하고, 길이가 가변인 사용자 이름만 말줄임 처리한다. */
+header.app > button{flex:none;white-space:nowrap}
+header.app .who{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+@media(max-width:400px){ header.app{gap:8px;padding-left:12px;padding-right:12px} }
 #alertBar{background:var(--aml);color:var(--am-dark);border-bottom:1px solid #FDE68A;padding:9px 16px;font-size:13px;display:flex;gap:8px;align-items:flex-start}
 main{padding:16px}
 
