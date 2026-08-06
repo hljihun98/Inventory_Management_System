@@ -80,6 +80,7 @@ schema.sql            # (참고) 동일 구조 PostgreSQL 스키마 — 추후 �
 ## 9. 배포 (중요)
 
 - **프론트엔드**: `git push origin main` → GitHub Pages 자동 반영(1~2분).
+  - ⚠️ **`index.html` 의 `?v=YYYYMMDD` 4곳(css 1 + js 3)을 반드시 함께 올릴 것.** 안 올리면 브라우저·Pages 캐시가 이전 `app-*.js`/`app.css` 를 계속 내려줘서 **푸시는 됐는데 화면은 안 바뀐다**(같은 날 재배포는 `-2`, `-3` 접미사).
 - **백엔드(`Code.gs`)**: git으로는 반영 안 됨. **Apps Script에 수동 재배포 필요** — Apps Script 편집기에 `Code.gs` 붙여넣기 → 저장 → **배포 → 배포 관리 → ✏️ → 버전: 새 버전 → 배포**(웹앱 URL 유지). "새 배포"가 아니라 기존 배포를 **편집**할 것.
 - 커밋 시 **Code.gs 변경 포함 여부를 항상 명시**(백엔드 재배포 필요 여부).
 - `DEFAULT_API_URL`(app-core.js)에 운영 웹앱 URL 고정 → 로그인 화면 주소 입력 숨김.
