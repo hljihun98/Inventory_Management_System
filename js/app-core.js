@@ -168,6 +168,7 @@ async function api(action, payload={}, opt={}){
   catch(e){ throw apiErr('E0002','서버 응답 형식 오류 — Apps Script 배포 설정(액세스: 모든 사용자)을 확인하세요'); }
   if(!json.ok) throw apiErr(json.code||'E9000', json.error||'요청 실패', json.ref);
   if(json.snapshot && !opt.noApply) applySnapshot(json.snapshot);
+  else if(json.patch && !opt.noApply) applyPatch(json.patch);
   return json;
 }
 /* 오류코드를 메시지 앞에 붙여 Error 로 만든다 → 기존 toast(e.message) 들이 자동으로 "[코드] 메시지"를 노출.
@@ -181,6 +182,22 @@ function applySnapshot(d){
   S.locs = d.locs||[]; S.hist = d.hist||[]; S.histTotal = d.histTotal ?? (d.hist||[]).length;
   S.openIssueCount = d.openIssueCount ?? S.openIssueCount ?? 0;
   S.bom = d.bom||[];
+}
+/* 부분 갱신 — 입·출고처럼 "무엇이 바뀌었는지 서버가 아는" 경우엔 전체 스냅샷 왕복 대신
+   바뀐 품목 행과 새 이력만 받아 메모리 상태에 반영한다(처리 속도의 핵심).
+   S.hist 는 스냅샷과 동일하게 시트 순서(오래된 것 → 최신)를 유지 → 뒤에 붙이고 앞에서 잘라낸다. */
+function applyPatch(d){
+  (d.items||[]).forEach(n=>{
+    if(!n) return;
+    const i = S.items.findIndex(x=>x.code===n.code && String(x.rev||'')===String(n.rev||''));
+    if(i>=0) S.items[i] = Object.assign({}, S.items[i], n); else S.items.push(n);
+  });
+  const add = (d.histAdd||[]).filter(Boolean);
+  if(add.length){
+    S.hist = S.hist.concat(add);
+    if(S.hist.length > 500) S.hist = S.hist.slice(-500);   // 스냅샷과 같은 상한(최근 500건)
+    S.histTotal = (S.histTotal||0) + add.length;
+  }
 }
 async function loadAll(){ try{ await api('all'); S.loaded=true; }catch(e){ toast(e.message,'err'); } }
 

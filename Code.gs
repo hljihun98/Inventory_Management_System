@@ -417,11 +417,20 @@ function setSettingsObj_(s) {
 }
 
 /* ============ 스냅샷 (프론트엔드 동기화용) ============ */
+/* Items 행 → 프론트 품목 객체 (snapshot_ 과 부분 갱신 patch 가 같은 형태를 쓰도록 공유) */
+function itemOut_(i) {
+  if (!i) return null;
+  return { code: String(i.item_code), rev: String(i.rev || ''), name: i.name, unit: i.unit || 'EA', safetyStock: Number(i.safety_stock) || 0, stock: Number(i.stock) || 0, location: String(i.location || '') };
+}
+/* History 시트에 기록한 행(배열) → 프론트 이력 객체.
+   컬럼 순서: tx_id(0)·ts(1)·type(2)·item_code(3)·rev(4)·qty(5)·before(6)·after(7)·location(8)·reason(9)·user(10) */
+function histOutRow_(h) {
+  if (!h) return null;
+  return { id: h[0], ts: Number(h[1]) || 0, type: h[2], itemCode: String(h[3]), rev: String(h[4] || ''), qty: Number(h[5]) || 0, before: Number(h[6]) || 0, after: Number(h[7]) || 0, location: String(h[8] || ''), reason: String(h[9] || ''), user: h[10] };
+}
 function snapshot_() {
   var users = readTable_('Users').rows.map(function (u) { return { id: u.user_id, name: u.name, role: u.role }; });
-  var items = readTable_('Items').rows.map(function (i) {
-    return { code: String(i.item_code), rev: String(i.rev || ''), name: i.name, unit: i.unit || 'EA', safetyStock: Number(i.safety_stock) || 0, stock: Number(i.stock) || 0, location: String(i.location || '') };
-  });
+  var items = readTable_('Items').rows.map(itemOut_);
   var locs = readTable_('Locations').rows.map(function (l) {
     return { code: String(l.location_code), warehouse: String(l.warehouse || ''), zone: String(l.zone || ''), rack: String(l.rack || '') };
   });
@@ -466,8 +475,9 @@ function applyTx_(user, p, itemsTable, histSink) {
     if (!batch) itemsTable.sheet.getRange(item._row, 7).setValue(loc);   // location 만 변경(배치는 호출부가 일괄 flush)
     item.location = loc;
     var moveReason = '📍 ' + fromLoc + ' → ' + toLoc + (p.reason ? ' | ' + p.reason : '');
-    recordHistory([uid_(), Date.now(), 'MOVE', item.item_code, item.rev || '', before, before, before, loc, moveReason, user.name]);
-    return { ok: true, type: 'MOVE', qty: before, before: before, after: before, code: item.item_code, rev: item.rev || '', from: fromLoc, to: toLoc };
+    var moveHist = [uid_(), Date.now(), 'MOVE', item.item_code, item.rev || '', before, before, before, loc, moveReason, user.name];
+    recordHistory(moveHist);
+    return { ok: true, type: 'MOVE', qty: before, before: before, after: before, code: item.item_code, rev: item.rev || '', from: fromLoc, to: toLoc, hist: moveHist };
   }
 
   // ----- 재고 실사 조정: 실물 카운트(절대 수량)로 재고를 맞추고 증감분을 기록 -----
@@ -480,8 +490,9 @@ function applyTx_(user, p, itemsTable, histSink) {
     if (!batch) itemsTable.sheet.getRange(item._row, 6).setValue(after);   // stock
     item.stock = after;
     var adjReason = '실사 조정 ' + (delta > 0 ? '+' : '') + delta + (p.reason ? ' | ' + p.reason : '');
-    recordHistory([uid_(), Date.now(), 'ADJUST', item.item_code, item.rev || '', Math.abs(delta), before, after, loc, adjReason, user.name]);
-    return { ok: true, type: 'ADJUST', qty: Math.abs(delta), delta: delta, before: before, after: after, code: item.item_code, rev: item.rev || '' };
+    var adjHist = [uid_(), Date.now(), 'ADJUST', item.item_code, item.rev || '', Math.abs(delta), before, after, loc, adjReason, user.name];
+    recordHistory(adjHist);
+    return { ok: true, type: 'ADJUST', qty: Math.abs(delta), delta: delta, before: before, after: after, code: item.item_code, rev: item.rev || '', hist: adjHist };
   }
 
   // ----- 입고 / 출고 -----
@@ -491,13 +502,15 @@ function applyTx_(user, p, itemsTable, histSink) {
   else { if (before < qty) throw new Error('재고 부족: 현재고 ' + before); after = before - qty; }
 
   if (!batch) {
-    itemsTable.sheet.getRange(item._row, 6).setValue(after);        // stock
-    if (type === 'IN' && p.loc) itemsTable.sheet.getRange(item._row, 7).setValue(loc);  // location
+    // stock(6)+location(7)을 한 번에 써서 시트 왕복을 1회로 줄인다(입고 위치 미지정이면 같은 값 재기록 = 무해)
+    if (type === 'IN') itemsTable.sheet.getRange(item._row, 6, 1, 2).setValues([[after, loc]]);
+    else itemsTable.sheet.getRange(item._row, 6).setValue(after);   // 출고는 위치 불변 → stock 만
   }
   item.stock = after; item.location = loc;                         // in-memory 갱신 → 배치 내 후속 행 반영
 
-  recordHistory([uid_(), Date.now(), type, item.item_code, item.rev || '', qty, before, after, loc, p.reason || '', user.name]);
-  return { ok: true, type: type, qty: qty, before: before, after: after, code: item.item_code, rev: item.rev || '' };
+  var txHist = [uid_(), Date.now(), type, item.item_code, item.rev || '', qty, before, after, loc, p.reason || '', user.name];
+  recordHistory(txHist);
+  return { ok: true, type: type, qty: qty, before: before, after: after, code: item.item_code, rev: item.rev || '', hist: txHist };
 }
 
 /* 출고로 재고가 안전재고선을 "이번에 처음" 밑돈 경우에만 실시간 Chat 알림 (중복 방지) */
@@ -512,13 +525,22 @@ function notifyLowStockIfCrossed_(item, outQty) {
   }
 }
 
+/* 단건 입·출고 — 응답에 전체 스냅샷을 담지 않는다.
+   스냅샷은 Users·Items·Locations·History(전량)·Issues·BOM 6개 시트를 다시 읽고 최근 500건 이력까지
+   직렬화해 돌려주므로, 한 건 처리마다 그 왕복이 붙어 체감 속도의 대부분을 잡아먹었다.
+   바뀐 것은 그 품목 1행과 새 이력 1건뿐이므로 patch 로만 내려보내고 프론트가 메모리 상태를 부분 갱신한다.
+   (다른 사용자의 변경은 기존대로 🔄 새로고침 / 재로그인 때 스냅샷으로 동기화) */
 function tx_(user, p) {
   var itemsTable = readTable_('Items');
   var r = applyTx_(user, p, itemsTable);
-  if (r.type === 'OUT') notifyLowStockIfCrossed_(findItem_(itemsTable.rows, r.code, r.rev), r.qty);
-  else if (r.type === 'ADJUST' && r.delta < 0) notifyLowStockIfCrossed_(findItem_(itemsTable.rows, r.code, r.rev), -r.delta);
+  var item = findItem_(itemsTable.rows, r.code, r.rev);
+  if (r.type === 'OUT') notifyLowStockIfCrossed_(item, r.qty);
+  else if (r.type === 'ADJUST' && r.delta < 0) notifyLowStockIfCrossed_(item, -r.delta);
   rebuildReports_();
-  return { ok: true, after: r.after, snapshot: snapshot_() };
+  return {
+    ok: true, after: r.after, type: r.type,
+    patch: { items: [itemOut_(item)], histAdd: [histOutRow_(r.hist)] }
+  };
 }
 
 /* 여러 입·출고를 한 번에 처리 — 행별 성공/실패를 모아 반환(부분 성공 허용) */
@@ -553,7 +575,13 @@ function bulkTx_(user, p) {
     if (item) notifyLowStockIfCrossed_(item, outKeys[k]);
   });
   rebuildReports_();
-  return { ok: true, results: results, snapshot: snapshot_() };
+  // tx_ 와 같은 이유로 전체 스냅샷 대신 patch — 성공한 품번 행들 + 새 이력만 내려보낸다
+  var touched = {};
+  results.forEach(function (x) { if (x.ok) touched[String(x.code).toUpperCase() + '|' + String(x.rev || '').toUpperCase()] = true; });
+  var patchItems = itemsTable.rows.filter(function (r) {
+    return touched[String(r.item_code).toUpperCase() + '|' + String(r.rev || '').toUpperCase()];
+  }).map(itemOut_);
+  return { ok: true, results: results, patch: { items: patchItems, histAdd: histRows.map(histOutRow_) } };
 }
 
 /* ============ 품번 마스터 동기화 (AppSheet 웹훅 수신) ============ */

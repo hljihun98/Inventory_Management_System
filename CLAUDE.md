@@ -32,6 +32,7 @@ schema.sql            # (참고) 동일 구조 PostgreSQL 스키마 — 추후 �
 
 - **API 패턴**: 프론트 `api(action, payload)` → `POST text/plain`(CORS preflight 회피)로 Apps Script에 `{action, auth, ...}` 전송 → `{ok, snapshot?, ...}` 수신. `Content-Type`은 반드시 `text/plain`.
 - **상태**: 전역 `S` 객체(app-core.js). 로그인 시 전체 스냅샷 1회 로드(`snapshot_`), 이후 메모리 상태로 즉시 렌더. `🔄` 새로고침으로 재동기화.
+- **응답 크기 = 처리 속도**: `snapshot_()` 은 6개 시트(History 전량 포함)를 다시 읽으므로 **쓰기 응답에 함부로 담지 말 것**. 무엇이 바뀌었는지 서버가 아는 경우(`tx`/`bulkTx`)는 `{patch:{items:[…], histAdd:[…]}}` 만 내려보내고 프론트 `applyPatch()` 가 메모리 상태를 부분 갱신한다. 다른 사용자의 변경은 `🔄`/재로그인 때 스냅샷으로 맞춘다.
 - **쓰기 직렬화**: 모든 쓰기는 백엔드 `withLock_`(LockService)로 감싸 다중 사용자 동시성에서 재고 정합성 보장. 재고 검증(부족 출고 차단)·중복 방지는 **서버에서** 수행.
 - **편집 충돌**: 소프트 락(`acquireLock`/`renewLock`, TTL 3분) + 버전 충돌 감지(`baseVersion`).
 - **빌드 없음**: 트랜스파일/번들 없음. 브라우저 표준 JS만. 외부 라이브러리는 CDN(`html5-qrcode`)뿐.
