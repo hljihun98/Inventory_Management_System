@@ -1151,7 +1151,7 @@ function admData(){
 /* =========================================================
    초기화
 ========================================================= */
-(function init(){
+(async function init(){
   initTheme();
   $('#themeBtn').onclick = toggleTheme;
   $('#apiUrl').value = DEFAULT_API_URL || recall('ims_api');
@@ -1163,4 +1163,5 @@ function admData(){
   $('#logoutBtn').onclick = doLogout;
   $('#refreshBtn').onclick = refreshNow;
   $('#errHelpLink').onclick = openErrorHelp;
+  await restoreSession();     // 저장된 로그인이 있으면 새로고침해도 로그인 화면을 거치지 않는다
 })();

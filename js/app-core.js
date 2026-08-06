@@ -326,6 +326,72 @@ function buildableOf(code, rev){
   }, Infinity);
 }
 
+/* ---------- 로그인 세션 유지 ----------
+   새로고침·탭 복원·브라우저 재시작으로 로그아웃되지 않도록 자격을 기기에 저장한다.
+   저장 내용은 요청마다 이미 서버로 보내는 것과 같은 {아이디, 비밀번호 해시} — 다만 디스크에 남으므로
+   TTL(마지막 접속 기준 14일, 접속마다 갱신)을 두고 명시적 로그아웃 때는 즉시 지운다.
+   ※ 여러 사람이 한 기기를 돌려 쓰는 경우엔 마지막 사용자로 자동 로그인되어 이력의 담당자가
+     잘못 남을 수 있다 → 그런 환경이면 로그아웃을 습관화하거나 세션 유지를 끄는 편이 안전. */
+const SESSION_KEY = 'ims_session';
+const SESSION_TTL_MS = 14*24*60*60*1000;      // 14일 (쓸 때마다 갱신되므로 매일 쓰면 사실상 유지)
+function saveSession(){
+  if(!S.auth || !S.me) return;
+  remember(SESSION_KEY, JSON.stringify({
+    id:S.auth.id, pwHash:S.auth.pwHash, name:S.me.name, role:S.me.role, api:S.api, at:Date.now()
+  }));
+}
+function loadSession(){
+  try{
+    const s = JSON.parse(recall(SESSION_KEY)||'null');
+    if(!s || !s.id || !s.pwHash) return null;
+    if(Date.now() - (Number(s.at)||0) > SESSION_TTL_MS){ clearSession(); return null; }
+    return s;
+  }catch(e){ clearSession(); return null; }
+}
+function clearSession(){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} }
+/* 로그인 성공 / 세션 복원 공통 — 앱 화면으로 전환하고 사용자 표시를 채운다 */
+function enterApp(){
+  $('#loginView').classList.add('hidden');
+  $('#appView').classList.remove('hidden');
+  $('#whoName').textContent = S.me.name;
+  $('#whoRole').textContent = S.me.role==='admin' ? '관리자' : '사용자';
+  $('#whoAvatar').textContent = (S.me.name||'?').trim().slice(0,1).toUpperCase();
+  buildTabs();
+}
+function showLoginView(){
+  $('#appView').classList.add('hidden');
+  $('#loginView').classList.remove('hidden');
+  $('#loginPw').value='';
+}
+/* 저장된 세션으로 자동 복귀. 자격 검증은 서버(api('all') → auth_)가 한다. */
+async function restoreSession(){
+  const s = loadSession();
+  if(!s) return false;
+  S.api = DEFAULT_API_URL || s.api || '';   // 운영 URL이 코드에 박혀 있으면 그것이 정본(웹앱 재배포로 주소가 바뀐 경우 대비)
+  S.auth = { id:s.id, pwHash:s.pwHash };
+  S.me = { id:s.id, name:s.name, role:s.role };
+  S.tab = 'scan';
+  enterApp();
+  $('#main').innerHTML = '<div class="empty">로그인 정보를 확인하는 중…</div>';
+  try{
+    await api('all');            // 자격 검증 + 스냅샷 로드
+    S.loaded = true;
+    saveSession();               // 접속했으니 만료 시점 갱신(슬라이딩)
+    buildTabs(); renderCurrent();
+  }catch(e){
+    if(String(e.code||'').startsWith('E2')){    // 비밀번호 변경·계정 삭제 등 자격 문제 → 세션 폐기
+      clearSession(); S.auth=null; S.me=null; S.loaded=false;
+      showLoginView();
+      toast('로그인이 만료되었습니다. 다시 로그인하세요','err');
+      return false;
+    }
+    // 네트워크·서버 오류는 자격 문제가 아니므로 세션을 지우지 않는다(비행기모드·현장 음영지역)
+    toast(e.message,'err');
+    $('#main').innerHTML = '<div class="empty">데이터를 불러오지 못했습니다 · 상단 🔄 로 다시 시도하세요</div>';
+  }
+  return true;
+}
+
 /* ---------- 로그인 ---------- */
 async function doLogin(){
   const url = $('#apiUrl').value.trim();
@@ -340,12 +406,8 @@ async function doLogin(){
       S.auth = { id, pwHash };
       S.me = r.user;
       remember('ims_api', url); remember('ims_id', id);
-      $('#loginView').classList.add('hidden');
-      $('#appView').classList.remove('hidden');
-      $('#whoName').textContent = S.me.name;
-      $('#whoRole').textContent = S.me.role==='admin' ? '관리자' : '사용자';
-      $('#whoAvatar').textContent = (S.me.name||'?').trim().slice(0,1).toUpperCase();
-      buildTabs(); go('scan');
+      saveSession();                 // 새로고침해도 로그인 유지
+      enterApp(); go('scan');
     }catch(e){ toast(e.message,'err'); }
   });
 }
@@ -353,6 +415,7 @@ function doLogout(){
   stopScan();
   closeScanPop();                 // 하단 고정 카드는 body 자식이라 로그인 화면 위에 남을 수 있음
   lockRelease();
+  clearSession();                 // 명시적 로그아웃 → 저장된 세션도 즉시 폐기(다음 새로고침에 자동 로그인 안 됨)
   S.me = null; S.auth = null; S.loaded = false;
   // 화면·입력 상태 초기화 → 같은 기기에서 다른 사용자가 로그인해도 이전 상태(스캔 대상·사진·이상내용·초안)가 남지 않음
   S.tab='scan'; S._invInit=false; S._invCollapsed=null; S._invQ=''; S._invGroup='';
@@ -362,9 +425,7 @@ function doLogout(){
   S._docCode=''; S._docRev=''; S._isCode=''; S._isRev=''; S._issueTab='new';
   S._bulkRows=null; S._assyView=null; S._assyQty=1; S._treeOpen=null;
   S._prefillNewItemCode=null; S._prefillNewItemRev=null;
-  $('#appView').classList.add('hidden');
-  $('#loginView').classList.remove('hidden');
-  $('#loginPw').value='';
+  showLoginView();
 }
 
 /* ---------- 탭/라우팅 ---------- */
