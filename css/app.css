@@ -210,9 +210,11 @@ nav.tabs button .badge{position:absolute;top:2px;right:calc(50% - 20px);backgrou
 #reader video{border-radius:11px}
 .scan-hit{border-left-color:var(--ac)}
 .big-qty{display:flex;align-items:stretch;gap:0;border:1.5px solid var(--bd);border-radius:10px;overflow:hidden;background:var(--sf)}
-.big-qty button{width:52px;font-size:22px;font-weight:700;background:var(--s2);color:var(--ac)}
+.big-qty button{flex:none;width:52px;font-size:22px;font-weight:700;background:var(--s2);color:var(--ac)}
 .big-qty button:hover{background:var(--acl)}
-.big-qty input{flex:1;text-align:center;font-size:22px;font-weight:700;border:none;border-left:1.5px solid var(--bd);border-right:1.5px solid var(--bd);font-variant-numeric:tabular-nums;font-family:var(--fd)}
+/* min-width:0 필수 — input 의 자동 최소 너비(기본 size=20 × 큰 폰트)가 좁은 폭에서 −/+ 버튼을
+   overflow:hidden 밖으로 밀어내 잘리게 만든다(좁은 화면·플로팅 카드에서 + 버튼 사라짐). */
+.big-qty input{flex:1;min-width:0;text-align:center;font-size:22px;font-weight:700;border:none;border-left:1.5px solid var(--bd);border-right:1.5px solid var(--bd);font-variant-numeric:tabular-nums;font-family:var(--fd)}
 .seg{display:flex;gap:4px;background:var(--s2);border:1px solid var(--bd);border-radius:10px;padding:4px}
 .seg.seg-compact button{font-size:12px;padding:8px 2px}
 .seg button{flex:1;padding:9px;font-weight:600;color:var(--t2);background:transparent;border-radius:7px;transition:all .15s}
