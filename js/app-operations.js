@@ -26,6 +26,7 @@ function renderScan(){
       <div id="reader"></div>
       <div class="row" style="margin-top:10px">
         <button class="btn btn-primary" id="scanToggle">카메라 스캔 시작</button>
+        <button type="button" class="scan-icon-btn" id="beepTest" title="스캔음 테스트" aria-label="스캔음 테스트" style="font-size:19px">🔊</button>
       </div>
       <div class="field" style="margin-top:12px"><label>수동 입력 (카메라/리더기 미사용 시)</label>
         <div class="row"><input id="manualCode" placeholder="부품 품번 입력 또는 리더기로 스캔" style="flex:2;padding:11px 12px;border:1.5px solid var(--line);border-radius:9px">

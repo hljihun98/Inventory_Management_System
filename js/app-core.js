@@ -76,15 +76,20 @@ async function initAudio(){
     return _actx.state==='running' ? _actx : null;
   }catch(e){ return null; }
 }
-/* 계산대 스캐너처럼 짧고 또렷한 고음. 두 주파수를 겹쳐 휴대폰의 작은 스피커에서도 잘 들리게 한다. */
+/* 계산대 스캐너처럼 짧고 또렷한 고음.
+   실물 핸디 스캐너(Honeywell 굿리드 비프) 규격에 맞춤 — 음높이 Low 1600Hz / Medium 2700Hz / High 4200Hz,
+   기본값이 Medium(2700Hz) · 음량 기본 High. 사람 귀와 휴대폰 스피커가 가장 크게 듣는 2~5kHz 대역이라
+   같은 출력으로도 훨씬 크게 들린다. 스윕(주파수 하강) 없이 일정한 피치를 유지하는 것도 실물과 동일.
+   ※ 리미터는 '넘칠 때만 잡는' 용도 — threshold 를 0dB 근처로. 예전 값(-10dB · ratio 8)은 피크를
+     8~10dB 깎아내려 소리가 작아지는 원인이었다. */
 async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'(미등록/실패) · 'tick'(읽음 — 조회 대기)
   try{
     const ctx = await initAudio(); if(!ctx) return;
     const t=ctx.currentTime+0.005;
     const master=ctx.createGain(), limiter=ctx.createDynamicsCompressor();
-    master.gain.value=0.72;
-    limiter.threshold.value=-10; limiter.knee.value=4; limiter.ratio.value=8;
-    limiter.attack.value=0.002; limiter.release.value=0.08;
+    master.gain.value=1;
+    limiter.threshold.value=-1.5; limiter.knee.value=0; limiter.ratio.value=20;
+    limiter.attack.value=0.001; limiter.release.value=0.05;
     master.connect(limiter); limiter.connect(ctx.destination);
 
     const tone=(type, fromHz, toHz, delay, duration, peak)=>{
@@ -99,14 +104,14 @@ async function beep(kind){                 // kind: 'ok'(인식 성공) · 'err'
       o.connect(g); g.connect(master); o.start(start); o.stop(end+0.01);
     };
 
-    if(kind==='err'){
-      tone('square',360,290,0,0.14,0.32);
-      tone('square',310,250,0.17,0.14,0.28);
+    if(kind==='err'){                        // 낮게 깔리는 두 번의 부저 — 성공음과 절대 헷갈리지 않게
+      tone('square',420,300,0,0.15,0.62);
+      tone('square',330,235,0.18,0.16,0.58);
     }else if(kind==='tick'){                 // 바코드를 읽었다는 신호만 — 성공 삑보다 낮고 짧고 작게
-      tone('triangle',1150,980,0,0.045,0.2);
-    }else{
-      tone('square',1950,1650,0,0.105,0.42);
-      tone('sine',2850,2350,0,0.085,0.16);
+      tone('triangle',1250,1100,0,0.045,0.24);
+    }else{                                   // 인식 성공 — 실물 스캐너와 같은 일정 피치의 날카로운 단발음
+      tone('square',2700,2700,0,0.115,0.62); // Medium 2700Hz (실물 기본음) · 사각파라 배음까지 실려 크게 들림
+      tone('sine', 4200,4200,0,0.100,0.30);  // High 4200Hz 겹침 → 찌르는 존재감(작은 폰 스피커 보완)
     }
     const hold = kind==='err' ? 400 : (kind==='tick' ? 150 : 220);
     setTimeout(()=>{ try{ master.disconnect(); limiter.disconnect(); }catch(e){} }, hold);
